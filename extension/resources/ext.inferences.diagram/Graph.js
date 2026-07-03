@@ -1100,8 +1100,13 @@
 			}
 		} );
 		name.addEventListener( 'keydown', function ( e ) {
-			if ( e.key === 'Enter' ) {
+			if ( e.key === 'Enter' || e.key === 'Escape' ) {
 				name.blur();
+				// return focus to the canvas so Escape/Delete/undo keep working
+				self.container.focus( { preventScroll: true } );
+				if ( e.key === 'Escape' ) {
+					self._select( null );
+				}
 			}
 			e.stopPropagation();
 		} );
