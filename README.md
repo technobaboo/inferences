@@ -27,6 +27,11 @@ permissions** — nothing bespoke to run or maintain beyond MediaWiki itself.
   connect it (release on empty space to create *and* connect a new thing)
 - Relationships are curved edges carrying a **tag** (typed, colored, reusable
   across the diagram) and a list of **evidence** entries (source + snippet)
+- **Relationships about relationships**: an edge's endpoint can be another
+  edge (anchored at its label pill), so a "Unix domain socket" thing can be
+  the *transport for* the "connects" relationship between two other things.
+  Right-drag onto (or from) an edge exactly like a node; deleting anything
+  cascades through edges attached to edges
 - Things can **link to wiki pages** — readers click a node to follow the
   link, and linked pages show the diagram under "What links here"
 - **Pinnable inspector cards**: pin a thing's or relationship's card open and
@@ -83,9 +88,13 @@ in a browser to hack on the editor — it saves to localStorage, append
 }
 ```
 
-`hx`/`hy` is the edge's curve handle; `hset` records whether it was placed by
-hand (otherwise it follows the midpoint as things move). IDs are never reused,
-so external annotations can reference them stably.
+`from`/`to` may name a thing **or another relationship** — things,
+relationships and tags share one ID space (as in the native app), and a
+relationship endpoint anchors at that edge's midpoint. Cycles and dangling
+endpoints are dropped on load. `hx`/`hy` is the edge's curve handle; `hset`
+records whether it was placed by hand (otherwise it follows its endpoints as
+they move). IDs are never reused, so external annotations can reference them
+stably.
 
 ### Roadmap
 

@@ -29,6 +29,7 @@
 	'use strict';
 
 	var THING_RADIUS = 32;
+	var REL_ANCHOR_RADIUS = 12; // rim radius when an edge is the endpoint
 	var CLICK_SLOP = 4; // px of screen movement that still counts as a click
 	var RIGHT_DEADZONE = 10; // matches the native app's radial deadzone
 	var MIN_ZOOM = 0.2;
@@ -104,29 +105,48 @@
 				link: String( t.link || '' )
 			};
 		} );
+		// Relationship endpoints may be things OR other relationships
+		// (reification: "unix domain socket" -> the "connects" edge).
+		// Keep a relationship once both endpoints resolve to something
+		// kept; this fixpoint also drops self-references and cycles,
+		// mirroring the native app's retain() pass.
+		var candidates = {};
 		Object.keys( raw.relationships || {} ).forEach( function ( id ) {
 			var r = raw.relationships[ id ] || {};
 			seen( id );
-			if ( r.from === r.to || !doc.things[ r.from ] || !doc.things[ r.to ] ) {
+			if ( r.from == null || r.to == null || String( r.from ) === String( r.to ) ) {
 				return;
 			}
+			candidates[ id ] = r;
+		} );
+		var kept = {};
+		var changed = true;
+		while ( changed ) {
+			changed = false;
+			Object.keys( candidates ).forEach( function ( id ) {
+				if ( kept[ id ] ) {
+					return;
+				}
+				var r = candidates[ id ];
+				if ( ( doc.things[ r.from ] || kept[ r.from ] ) &&
+					( doc.things[ r.to ] || kept[ r.to ] ) ) {
+					kept[ id ] = r;
+					changed = true;
+				}
+			} );
+		}
+		Object.keys( kept ).forEach( function ( id ) {
+			var r = kept[ id ];
 			var rel = {
 				from: String( r.from ),
 				to: String( r.to ),
 				tag: ( r.tag != null && doc.tags[ r.tag ] ) ? String( r.tag ) : null,
-				hx: Number( r.hx ),
-				hy: Number( r.hy ),
-				hset: !!r.hset,
+				hx: Number( r.hx ) || 0,
+				hy: Number( r.hy ) || 0,
+				hset: !!r.hset && !isNaN( Number( r.hx ) ) && !isNaN( Number( r.hy ) ),
 				pinned: !!r.pinned,
 				evidence: []
 			};
-			if ( isNaN( rel.hx ) || isNaN( rel.hy ) || !rel.hset ) {
-				var a = doc.things[ rel.from ];
-				var b = doc.things[ rel.to ];
-				rel.hx = ( a.x + b.x ) / 2;
-				rel.hy = ( a.y + b.y ) / 2;
-				rel.hset = false;
-			}
 			( Array.isArray( r.evidence ) ? r.evidence : [] ).forEach( function ( ev ) {
 				rel.evidence.push( {
 					source: String( ( ev && ev.source ) || '' ),
@@ -259,13 +279,51 @@
 		return null;
 	};
 
-	Graph.prototype._bezierPoint = function ( rel, t ) {
-		var a = this.doc.things[ rel.from ];
-		var b = this.doc.things[ rel.to ];
+	/**
+	 * Where an endpoint attaches: a thing's center, or — when the endpoint
+	 * is another relationship — that edge's midpoint (its label pill).
+	 * `r` is the rim radius to trim the curve to. The visited set guards
+	 * against cycles, which normalizeDoc already drops but a stale doc
+	 * mid-edit shouldn't be able to hang the renderer.
+	 */
+	Graph.prototype._anchorOf = function ( id, visited ) {
+		var t = this.doc.things[ id ];
+		if ( t ) {
+			return { x: t.x, y: t.y, r: THING_RADIUS };
+		}
+		var rel = this.doc.relationships[ id ];
+		if ( !rel ) {
+			return { x: 0, y: 0, r: 0 };
+		}
+		visited = visited || {};
+		if ( visited[ id ] ) {
+			return { x: rel.hx, y: rel.hy, r: REL_ANCHOR_RADIUS };
+		}
+		visited[ id ] = true;
+		var p = this._bezierPoint( rel, 0.5, visited );
+		p.r = REL_ANCHOR_RADIUS;
+		return p;
+	};
+
+	/** Curve control point; edges never reshaped by hand follow their endpoints. */
+	Graph.prototype._relHandle = function ( rel, visited ) {
+		if ( rel.hset ) {
+			return { x: rel.hx, y: rel.hy };
+		}
+		var a = this._anchorOf( rel.from, visited );
+		var b = this._anchorOf( rel.to, visited );
+		return { x: ( a.x + b.x ) / 2, y: ( a.y + b.y ) / 2 };
+	};
+
+	Graph.prototype._bezierPoint = function ( rel, t, visited ) {
+		visited = visited || {};
+		var a = this._anchorOf( rel.from, visited );
+		var b = this._anchorOf( rel.to, visited );
+		var h = this._relHandle( rel, visited );
 		var mt = 1 - t;
 		return {
-			x: mt * mt * a.x + 2 * mt * t * rel.hx + t * t * b.x,
-			y: mt * mt * a.y + 2 * mt * t * rel.hy + t * t * b.y
+			x: mt * mt * a.x + 2 * mt * t * h.x + t * t * b.x,
+			y: mt * mt * a.y + 2 * mt * t * h.y + t * t * b.y
 		};
 	};
 
@@ -296,8 +354,9 @@
 		if ( !rel ) {
 			return null;
 		}
+		var h = this._relHandle( rel );
 		var r = 10 / this.doc.view.zoom;
-		if ( Math.hypot( wpt.x - rel.hx, wpt.y - rel.hy ) <= r ) {
+		if ( Math.hypot( wpt.x - h.x, wpt.y - h.y ) <= r ) {
 			return this.selection.id;
 		}
 		return null;
@@ -372,17 +431,16 @@
 		return id;
 	};
 
+	/** Endpoints may be thing ids or relationship ids. */
 	Graph.prototype._addRelationship = function ( fromId, toId ) {
 		this._pushUndo();
 		var id = this._newId();
-		var a = this.doc.things[ fromId ];
-		var b = this.doc.things[ toId ];
 		this.doc.relationships[ id ] = {
 			from: fromId,
 			to: toId,
 			tag: null,
-			hx: ( a.x + b.x ) / 2,
-			hy: ( a.y + b.y ) / 2,
+			hx: 0,
+			hy: 0,
 			hset: false,
 			pinned: false,
 			evidence: []
@@ -391,19 +449,35 @@
 		return id;
 	};
 
+	/**
+	 * Remove every relationship whose endpoint chain reaches a deleted
+	 * id — deleting an edge also deletes edges attached to that edge.
+	 */
+	Graph.prototype._cascadeDeleteRels = function ( dead ) {
+		var self = this;
+		var changed = true;
+		while ( changed ) {
+			changed = false;
+			Object.keys( this.doc.relationships ).forEach( function ( rid ) {
+				var rel = self.doc.relationships[ rid ];
+				if ( dead[ rel.from ] || dead[ rel.to ] ) {
+					delete self.doc.relationships[ rid ];
+					self._closeCard( 'rel:' + rid );
+					dead[ rid ] = true;
+					changed = true;
+				}
+			} );
+		}
+	};
+
 	Graph.prototype._deleteThing = function ( id ) {
 		this._pushUndo();
-		var self = this;
-		Object.keys( this.doc.relationships ).forEach( function ( rid ) {
-			var rel = self.doc.relationships[ rid ];
-			if ( rel.from === id || rel.to === id ) {
-				delete self.doc.relationships[ rid ];
-				self._closeCard( 'rel:' + rid );
-			}
-		} );
 		delete this.doc.things[ id ];
 		this._closeCard( 'thing:' + id );
-		if ( this.selection && this.selection.id === id ) {
+		var dead = {};
+		dead[ id ] = true;
+		this._cascadeDeleteRels( dead );
+		if ( this.selection && !this._selectionExists() ) {
 			this.selection = null;
 		}
 		this._markDirty();
@@ -413,10 +487,22 @@
 		this._pushUndo();
 		delete this.doc.relationships[ id ];
 		this._closeCard( 'rel:' + id );
-		if ( this.selection && this.selection.id === id ) {
+		var dead = {};
+		dead[ id ] = true;
+		this._cascadeDeleteRels( dead );
+		if ( this.selection && !this._selectionExists() ) {
 			this.selection = null;
 		}
 		this._markDirty();
+	};
+
+	Graph.prototype._selectionExists = function () {
+		if ( !this.selection ) {
+			return false;
+		}
+		return this.selection.kind === 'thing' ?
+			!!this.doc.things[ this.selection.id ] :
+			!!this.doc.relationships[ this.selection.id ];
 	};
 
 	Graph.prototype._addTag = function ( name ) {
@@ -596,9 +682,10 @@
 			}
 		} else if ( e.button === 2 ) {
 			var overThing = this._thingAt( wpt );
-			if ( this.editable && overThing ) {
+			var overRel = overThing ? null : this._relAt( wpt );
+			if ( this.editable && ( overThing || overRel ) ) {
 				start.mode = 'connect';
-				start.id = overThing;
+				start.id = overThing || overRel;
 			} else if ( this.editable ) {
 				start.mode = 'rightAdd';
 			} else {
@@ -652,7 +739,6 @@
 			var t = this.doc.things[ d.id ];
 			t.x = wpt.x + d.grabOffset.x;
 			t.y = wpt.y + d.grabOffset.y;
-			this._retetherHandles( d.id );
 			this._markDirty();
 		} else if ( d.mode === 'handle' && d.moved ) {
 			if ( !d.undoPushed ) {
@@ -671,20 +757,6 @@
 		this._scheduleRender();
 	};
 
-	/** Keep un-customized edge handles at the midpoint while endpoints move. */
-	Graph.prototype._retetherHandles = function ( thingId ) {
-		var self = this;
-		Object.keys( this.doc.relationships ).forEach( function ( id ) {
-			var rel = self.doc.relationships[ id ];
-			if ( !rel.hset && ( rel.from === thingId || rel.to === thingId ) ) {
-				var a = self.doc.things[ rel.from ];
-				var b = self.doc.things[ rel.to ];
-				rel.hx = ( a.x + b.x ) / 2;
-				rel.hy = ( a.y + b.y ) / 2;
-			}
-		} );
-	};
-
 	Graph.prototype._onPointerUp = function ( e ) {
 		var d = this.drag;
 		if ( !d || d.pointerId !== e.pointerId ) {
@@ -698,10 +770,10 @@
 		if ( d.mode === 'rightAdd' && !d.moved ) {
 			this._addThing( wpt );
 		} else if ( d.mode === 'connect' ) {
-			var target = this._thingAt( wpt );
+			var target = this._thingAt( wpt ) || this._relAt( wpt );
 			if ( target === d.id ) {
-				// right-click on a thing without dragging: open its card
-				this._select( 'thing', d.id );
+				// right-click without dragging: open the card
+				this._select( this.doc.things[ d.id ] ? 'thing' : 'rel', d.id );
 			} else {
 				if ( !target ) {
 					target = this._addThing( wpt );
@@ -821,6 +893,8 @@
 			this.tagChooser.el.remove();
 			this.tagChooser = null;
 		}
+		// the chooser's buttons are gone; keep keyboard shortcuts working
+		this.container.focus( { preventScroll: true } );
 		this._markDirty();
 		this._select( 'rel', relId );
 	};
@@ -1075,15 +1149,30 @@
 		}
 	};
 
+	/** Human label for an endpoint: a thing's name, or a bracketed edge description. */
+	Graph.prototype._endpointLabel = function ( id ) {
+		var thing = this.doc.things[ id ];
+		if ( thing ) {
+			return thing.name || '?';
+		}
+		var rel = this.doc.relationships[ id ];
+		if ( !rel ) {
+			return '?';
+		}
+		var tag = rel.tag ? this.doc.tags[ rel.tag ] : null;
+		return '[' + ( tag && tag.name ?
+			tag.name :
+			this._endpointLabel( rel.from ) + '→' + this._endpointLabel( rel.to ) ) + ']';
+	};
+
 	Graph.prototype._buildRelCard = function ( card ) {
 		var self = this;
 		var rel = this.doc.relationships[ card.id ];
 		if ( !rel ) {
 			return;
 		}
-		var fromName = ( this.doc.things[ rel.from ] || {} ).name || '?';
-		var toName = ( this.doc.things[ rel.to ] || {} ).name || '?';
-		this._cardHeader( card, ( fromName || '?' ) + ' → ' + ( toName || '?' ), rel );
+		this._cardHeader( card,
+			this._endpointLabel( rel.from ) + ' → ' + this._endpointLabel( rel.to ), rel );
 		var body = el( 'div', 'inf-card-body', card.el );
 
 		// tag picker
@@ -1309,26 +1398,27 @@
 		var self = this;
 		Object.keys( this.doc.relationships ).forEach( function ( id ) {
 			var rel = self.doc.relationships[ id ];
-			var a = self.doc.things[ rel.from ];
-			var b = self.doc.things[ rel.to ];
+			var a = self._anchorOf( rel.from );
+			var b = self._anchorOf( rel.to );
+			var h = self._relHandle( rel );
 			var tag = rel.tag ? self.doc.tags[ rel.tag ] : null;
 			var color = tag ? tag.color : '#8d8d8d';
 			var selected = self.selection && self.selection.kind === 'rel' && self.selection.id === id;
 			var hovered = self.hover && self.hover.kind === 'rel' && self.hover.id === id;
 
-			// trim endpoints to the node rims
-			var start = trimToRim( a, rel.hx, rel.hy );
-			var end = trimToRim( b, rel.hx, rel.hy );
+			// trim endpoints to the anchor rims (node circle or label pill)
+			var start = trimToRim( a, h.x, h.y );
+			var end = trimToRim( b, h.x, h.y );
 
 			ctx.strokeStyle = color;
 			ctx.lineWidth = ( selected || hovered ? 2.5 : 1.5 );
 			ctx.beginPath();
 			ctx.moveTo( start.x, start.y );
-			ctx.quadraticCurveTo( rel.hx, rel.hy, end.x, end.y );
+			ctx.quadraticCurveTo( h.x, h.y, end.x, end.y );
 			ctx.stroke();
 
 			// arrowhead pointing into the target
-			var angle = Math.atan2( end.y - rel.hy, end.x - rel.hx );
+			var angle = Math.atan2( end.y - h.y, end.x - h.x );
 			var ah = 9;
 			ctx.fillStyle = color;
 			ctx.beginPath();
@@ -1338,10 +1428,14 @@
 			ctx.closePath();
 			ctx.fill();
 
-			// label pill at the curve midpoint
+			// label pill at the curve midpoint (also the anchor for
+			// relationships that point at this relationship)
 			var label = tag ? tag.name : '';
 			if ( rel.evidence.length ) {
 				label += ( label ? ' ' : '' ) + '⧉' + rel.evidence.length;
+			}
+			if ( !label && self._isRelEndpoint( id ) ) {
+				label = '◦';
 			}
 			if ( label ) {
 				var mid = self._bezierPoint( rel, 0.5 );
@@ -1363,7 +1457,7 @@
 			// reshaping handle
 			if ( selected && self.editable ) {
 				ctx.save();
-				ctx.translate( rel.hx, rel.hy );
+				ctx.translate( h.x, h.y );
 				ctx.rotate( Math.PI / 4 );
 				ctx.fillStyle = '#ffffff';
 				ctx.fillRect( -5 / zoom, -5 / zoom, 10 / zoom, 10 / zoom );
@@ -1371,15 +1465,27 @@
 			}
 		} );
 
-		function trimToRim( thing, cx, cy ) {
-			var dx = cx - thing.x;
-			var dy = cy - thing.y;
+		function trimToRim( anchor, cx, cy ) {
+			var dx = cx - anchor.x;
+			var dy = cy - anchor.y;
 			var len = Math.hypot( dx, dy ) || 1;
 			return {
-				x: thing.x + dx / len * THING_RADIUS,
-				y: thing.y + dy / len * THING_RADIUS
+				x: anchor.x + dx / len * anchor.r,
+				y: anchor.y + dy / len * anchor.r
 			};
 		}
+	};
+
+	/** Is this relationship itself the endpoint of another relationship? */
+	Graph.prototype._isRelEndpoint = function ( id ) {
+		var rels = this.doc.relationships;
+		var ids = Object.keys( rels );
+		for ( var i = 0; i < ids.length; i++ ) {
+			if ( rels[ ids[ i ] ].from === id || rels[ ids[ i ] ].to === id ) {
+				return true;
+			}
+		}
+		return false;
 	};
 
 	Graph.prototype._drawThings = function ( ctx, zoom ) {
@@ -1429,10 +1535,7 @@
 		if ( !d || d.mode !== 'connect' || !d.ghostTo ) {
 			return;
 		}
-		var from = this.doc.things[ d.id ];
-		if ( !from ) {
-			return;
-		}
+		var from = this._anchorOf( d.id );
 		ctx.strokeStyle = 'rgba(255,255,255,0.55)';
 		ctx.lineWidth = 1.5;
 		ctx.setLineDash( [ 6, 5 ] );
@@ -1441,7 +1544,7 @@
 		ctx.lineTo( d.ghostTo.x, d.ghostTo.y );
 		ctx.stroke();
 		ctx.setLineDash( [] );
-		var over = this._thingAt( d.ghostTo );
+		var over = this._thingAt( d.ghostTo ) || this._relAt( d.ghostTo );
 		if ( !over || over === d.id ) {
 			ctx.strokeStyle = 'rgba(255,255,255,0.35)';
 			ctx.beginPath();
