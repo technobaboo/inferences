@@ -1,0 +1,68 @@
+{
+	"name": "Inferences",
+	"version": "0.1.0",
+	"author": [
+		"technobaboo"
+	],
+	"url": "https://github.com/technobaboo/inferences",
+	"descriptionmsg": "inferences-desc",
+	"type": "editor",
+	"manifest_version": 2,
+	"requires": {
+		"MediaWiki": ">= 1.43.0"
+	},
+	"AutoloadNamespaces": {
+		"MediaWiki\\Extension\\Inferences\\": "src/"
+	},
+	"ContentHandlers": {
+		"inferences-diagram": "MediaWiki\\Extension\\Inferences\\Content\\DiagramContentHandler"
+	},
+	"namespaces": [
+		{
+			"id": 7900,
+			"constant": "NS_DIAGRAM",
+			"name": "Diagram",
+			"defaultcontentmodel": "inferences-diagram",
+			"subpages": true,
+			"content": true
+		},
+		{
+			"id": 7901,
+			"constant": "NS_DIAGRAM_TALK",
+			"name": "Diagram_talk",
+			"subpages": true
+		}
+	],
+	"MessagesDirs": {
+		"Inferences": [
+			"i18n"
+		]
+	},
+	"Hooks": {
+		"ParserFirstCallInit": "main"
+	},
+	"HookHandlers": {
+		"main": {
+			"class": "MediaWiki\\Extension\\Inferences\\Hooks"
+		}
+	},
+	"ResourceFileModulePaths": {
+		"localBasePath": "resources",
+		"remoteExtPath": "Inferences/resources"
+	},
+	"ResourceModules": {
+		"ext.inferences.diagram": {
+			"packageFiles": [
+				"ext.inferences.diagram/init.js",
+				"ext.inferences.diagram/Graph.js"
+			],
+			"styles": [
+				"ext.inferences.diagram/styles.css"
+			],
+			"dependencies": [
+				"mediawiki.api",
+				"mediawiki.util"
+			]
+		}
+	}
+}

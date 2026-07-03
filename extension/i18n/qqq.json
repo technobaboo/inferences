@@ -1,0 +1,10 @@
+{
+	"@metadata": {
+		"authors": [
+			"technobaboo"
+		]
+	},
+	"inferences-desc": "{{desc|name=Inferences|url=https://github.com/technobaboo/inferences}}",
+	"inferences-embed-missing-page": "Error shown when the inferences-diagram parser tag is used without a page attribute.",
+	"inferences-invalid-doc": "Error shown on a Diagram-namespace page whose JSON content does not parse as a diagram document."
+}

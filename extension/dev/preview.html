@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inferences — canvas dev harness</title>
+<link rel="stylesheet" href="../resources/ext.inferences.diagram/styles.css">
+<style>
+	html, body { margin: 0; height: 100%; background: #101013; font-family: sans-serif; }
+	#stage { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div id="stage" class="ext-inferences-diagram"></div>
+<script src="../resources/ext.inferences.diagram/Graph.js"></script>
+<script>
+	// Standalone harness: same widget the wiki uses, minus MediaWiki.
+	// Saves to localStorage so you can iterate on the editor itself with
+	// nothing but a browser. Append ?fresh to reset.
+	var SAMPLE = {
+		version: 1,
+		view: { x: 0, y: 0, zoom: 1 },
+		tags: {
+			'1': { name: 'sends frames to', color: '#00a2c7' },
+			'2': { name: 'depends on', color: '#f76b15' }
+		},
+		things: {
+			'3': { name: 'Wayland client', color: '#46a758', x: -180, y: -60, pinned: false, link: 'Wayland' },
+			'4': { name: 'Compositor', color: '#3e63dd', x: 60, y: 20, pinned: false, link: 'Compositor' },
+			'5': { name: 'GPU driver', color: '#e5484d', x: 240, y: -140, pinned: false, link: '' }
+		},
+		relationships: {
+			'6': {
+				from: '3', to: '4', tag: '1', hx: -60, hy: 60, hset: true, pinned: false,
+				evidence: [ { source: 'https://wayland.freedesktop.org/docs/html/', snippet: 'wl_surface.commit atomically applies pending state.' } ]
+			},
+			'7': { from: '4', to: '5', tag: '2', hx: 150, hy: -60, hset: false, pinned: false, evidence: [] }
+		},
+		nextId: 8
+	};
+
+	var stored = null;
+	if ( window.location.search.indexOf( 'fresh' ) === -1 ) {
+		try { stored = JSON.parse( localStorage.getItem( 'inferences-dev-doc' ) ); } catch ( e ) {}
+	}
+
+	var graph = new InferencesGraph( document.getElementById( 'stage' ), {
+		doc: stored || SAMPLE,
+		editable: true,
+		resolveHref: function ( title ) { return 'https://en.wikipedia.org/wiki/' + encodeURIComponent( title ); },
+		navigate: function ( title ) { console.log( 'navigate:', title ); },
+		onDirtyChange: function ( dirty ) { saveBtn.disabled = !dirty; }
+	} );
+	var saveBtn = graph.addToolbarButton( 'Save (localStorage)', function () {
+		localStorage.setItem( 'inferences-dev-doc', graph.getDocJson() );
+		graph.markSaved();
+	}, { primary: true } );
+	saveBtn.disabled = true;
+	window.graph = graph; // for tests
+</script>
+</body>
+</html>
