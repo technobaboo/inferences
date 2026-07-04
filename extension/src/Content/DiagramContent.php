@@ -56,12 +56,54 @@ class DiagramContent extends JsonContent {
 		if ( !is_object( $data ) ) {
 			return false;
 		}
-		foreach ( [ 'things', 'relationships', 'tags' ] as $field ) {
+		foreach ( [ 'things', 'relationships', 'tags', 'types' ] as $field ) {
 			if ( isset( $data->$field ) && !is_object( $data->$field ) ) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Index the human-readable parts of the diagram — thing names, type
+	 * names ("program"), tag names, linked titles, evidence — so wiki
+	 * search finds diagrams by their content rather than JSON syntax.
+	 */
+	public function getTextForSearchIndex() {
+		$data = $this->getData()->getValue();
+		if ( !is_object( $data ) ) {
+			return parent::getTextForSearchIndex();
+		}
+		$words = [];
+		foreach ( [ 'things', 'types', 'tags' ] as $field ) {
+			if ( isset( $data->$field ) && is_object( $data->$field ) ) {
+				foreach ( get_object_vars( $data->$field ) as $entry ) {
+					if ( is_object( $entry ) ) {
+						foreach ( [ 'name', 'link' ] as $key ) {
+							if ( isset( $entry->$key ) && is_string( $entry->$key ) ) {
+								$words[] = $entry->$key;
+							}
+						}
+					}
+				}
+			}
+		}
+		if ( isset( $data->relationships ) && is_object( $data->relationships ) ) {
+			foreach ( get_object_vars( $data->relationships ) as $rel ) {
+				if ( is_object( $rel ) && isset( $rel->evidence ) && is_array( $rel->evidence ) ) {
+					foreach ( $rel->evidence as $evidence ) {
+						foreach ( [ 'source', 'snippet' ] as $key ) {
+							if ( is_object( $evidence ) && isset( $evidence->$key )
+								&& is_string( $evidence->$key )
+							) {
+								$words[] = $evidence->$key;
+							}
+						}
+					}
+				}
+			}
+		}
+		return implode( "\n", array_filter( array_unique( $words ) ) );
 	}
 
 	/**

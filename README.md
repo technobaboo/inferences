@@ -27,6 +27,16 @@ permissions** — nothing bespoke to run or maintain beyond MediaWiki itself.
   connect it (release on empty space to create *and* connect a new thing)
 - Relationships are curved edges carrying a **tag** (typed, colored, reusable
   across the diagram) and a list of **evidence** entries (source + snippet)
+- Relationships can be marked **inferred** (deduced rather than directly
+  observed) — drawn dashed with a "∴" marker
+- Things can carry a **type** (e.g. "program"): types have a shared name and
+  color, so every program looks the same, and type names are fed to the wiki
+  search index so `Special:Search` finds diagrams by type
+- The canvas **follows the page's light/dark mode** — Vector 2022's night
+  mode inside MediaWiki, `prefers-color-scheme` elsewhere — switching live
+- A thing's card shows **all its relationships** (click to inspect each) and
+  can **edit its linked wiki page's full source in place**, creating the page
+  if it doesn't exist yet
 - **Relationships about relationships**: an edge's endpoint can be another
   edge (anchored at its label pill), so a "Unix domain socket" thing can be
   the *transport for* the "connects" relationship between two other things.
@@ -75,16 +85,18 @@ in a browser to hack on the editor — it saves to localStorage, append
 	"version": 1,
 	"view": { "x": 0, "y": 0, "zoom": 1 },
 	"tags": { "1": { "name": "causes", "color": "#e5484d" } },
+	"types": { "6": { "name": "program", "color": "#46a758" } },
 	"things": {
-		"2": { "name": "Compositor", "color": "#3e63dd",
+		"2": { "name": "Compositor", "color": "#3e63dd", "type": "6",
 		        "x": 0, "y": 0, "pinned": false, "link": "Compositor" }
 	},
 	"relationships": {
 		"3": { "from": "2", "to": "4", "tag": "1",
-		        "hx": 10, "hy": 20, "hset": true, "pinned": false,
+		        "hx": 10, "hy": 20, "hset": true, "inferred": false,
+		        "pinned": false,
 		        "evidence": [ { "source": "https://…", "snippet": "…" } ] }
 	},
-	"nextId": 5
+	"nextId": 7
 }
 ```
 

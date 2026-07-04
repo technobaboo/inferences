@@ -22,6 +22,65 @@ function navigate( title ) {
 	window.location.href = mw.util.getUrl( title );
 }
 
+/**
+ * Vector 2022's night mode stamps skin-theme-clientpref-night (forced
+ * dark) or skin-theme-clientpref-os (follow the OS) on <html>. Minerva
+ * uses the same client preference classes.
+ */
+function wikiIsDark() {
+	var classes = document.documentElement.classList;
+	if ( classes.contains( 'skin-theme-clientpref-night' ) ) {
+		return true;
+	}
+	if ( classes.contains( 'skin-theme-clientpref-os' ) ) {
+		return window.matchMedia &&
+			window.matchMedia( '(prefers-color-scheme: dark)' ).matches;
+	}
+	return false;
+}
+
+/** Re-theme a graph whenever the skin theme class on <html> changes. */
+function followWikiTheme( graph ) {
+	var observer = new MutationObserver( function () {
+		graph.refreshTheme();
+	} );
+	observer.observe( document.documentElement, {
+		attributes: true,
+		attributeFilter: [ 'class' ]
+	} );
+}
+
+function notify( message, isError ) {
+	mw.notify( message, isError ? { type: 'error' } : undefined );
+}
+
+var pageApi = {
+	load: function ( title ) {
+		return new mw.Api().get( {
+			action: 'query',
+			prop: 'revisions',
+			titles: title,
+			rvprop: [ 'content' ],
+			rvslots: 'main',
+			formatversion: 2
+		} ).then( function ( res ) {
+			var p = res.query && res.query.pages && res.query.pages[ 0 ];
+			if ( !p || p.missing || !p.revisions ) {
+				return { exists: false, text: '' };
+			}
+			return { exists: true, text: p.revisions[ 0 ].slots.main.content };
+		} );
+	},
+	save: function ( title, text ) {
+		return new mw.Api().postWithEditToken( {
+			action: 'edit',
+			title: title,
+			text: text,
+			summary: 'Edited from an Inferences diagram'
+		} );
+	}
+};
+
 function initDiagramPage( container ) {
 	var doc;
 	try {
@@ -36,6 +95,9 @@ function initDiagramPage( container ) {
 		editable: false,
 		resolveHref: resolveHref,
 		navigate: navigate,
+		isDark: wikiIsDark,
+		pageApi: pageApi,
+		notify: notify,
 		onDirtyChange: function ( dirty ) {
 			if ( saveBtn ) {
 				saveBtn.disabled = !dirty;
@@ -43,6 +105,9 @@ function initDiagramPage( container ) {
 			}
 		}
 	} );
+	followWikiTheme( graph );
+	// dev/testing affordance: reach the instance from the console
+	container.infGraph = graph;
 
 	if ( !mw.config.get( 'wgIsProbablyEditable' ) ) {
 		return;
@@ -134,8 +199,10 @@ function initEmbed( container ) {
 			doc: doc,
 			editable: false,
 			resolveHref: resolveHref,
-			navigate: navigate
+			navigate: navigate,
+			isDark: wikiIsDark
 		} );
+		followWikiTheme( graph );
 		var open = graph.addToolbarButton( '⧉ ' + page, function () {
 			window.location.href = mw.util.getUrl( page );
 		} );

@@ -1,9 +1,50 @@
+/*
+ * Theme variables. The canvas reads these with getComputedStyle, so the
+ * whole widget — DOM and canvas drawing alike — follows one palette.
+ * Graph.js toggles .inf-theme-dark / .inf-theme-light on the container:
+ * inside MediaWiki that follows Vector's night-mode classes, elsewhere
+ * it follows prefers-color-scheme.
+ */
+.inf-theme-light {
+	--inf-bg: #f8f9fa;
+	--inf-grid-rgb: 100, 100, 100;
+	--inf-node-fill: #ffffff;
+	--inf-text: #202122;
+	--inf-muted: #72777d;
+	--inf-link: #3366cc;
+	--inf-ghost-rgb: 32, 33, 34;
+	--inf-surface: #ffffff;
+	--inf-surface-2: #eaecf0;
+	--inf-border: #a2a9b1;
+	--inf-accent: #3366cc;
+	--inf-accent-text: #ffffff;
+	--inf-danger: #bf3c2c;
+	--inf-shadow: rgba( 0, 0, 0, 0.2 );
+}
+
+.inf-theme-dark {
+	--inf-bg: #1b1b1f;
+	--inf-grid-rgb: 128, 128, 128;
+	--inf-node-fill: #26262b;
+	--inf-text: #e6e6e6;
+	--inf-muted: #9a9aa2;
+	--inf-link: #9ab4ff;
+	--inf-ghost-rgb: 255, 255, 255;
+	--inf-surface: #26262b;
+	--inf-surface-2: #1f1f24;
+	--inf-border: #4a4a52;
+	--inf-accent: #3e63dd;
+	--inf-accent-text: #ffffff;
+	--inf-danger: #ff9498;
+	--inf-shadow: rgba( 0, 0, 0, 0.5 );
+}
+
 .ext-inferences-diagram {
 	position: relative;
 	width: 100%;
 	border-radius: 6px;
 	overflow: hidden;
-	border: 1px solid #54595d;
+	border: 1px solid var( --inf-border, #54595d );
 }
 
 .ext-inferences-diagram-page {
@@ -13,7 +54,7 @@
 
 .inf-graph {
 	position: relative;
-	background: #1b1b1f;
+	background: var( --inf-bg );
 	user-select: none;
 }
 
@@ -54,15 +95,16 @@
 .inf-hint {
 	margin-left: auto;
 	font-size: 11px;
-	color: rgba( 230, 230, 230, 0.45 );
+	color: var( --inf-muted );
+	opacity: 0.8;
 	pointer-events: none;
 	text-align: right;
 }
 
 .inf-btn {
-	background: #2c2c33;
-	color: #e6e6e6;
-	border: 1px solid #4a4a52;
+	background: var( --inf-surface );
+	color: var( --inf-text );
+	border: 1px solid var( --inf-border );
 	border-radius: 4px;
 	padding: 3px 10px;
 	font-size: 12px;
@@ -71,7 +113,7 @@
 }
 
 .inf-btn:hover:not( :disabled ) {
-	background: #3a3a42;
+	background: var( --inf-surface-2 );
 }
 
 .inf-btn:disabled {
@@ -80,34 +122,35 @@
 }
 
 .inf-btn-primary {
-	background: #3e63dd;
-	border-color: #3e63dd;
-	color: #fff;
+	background: var( --inf-accent );
+	border-color: var( --inf-accent );
+	color: var( --inf-accent-text );
 }
 
 .inf-btn-primary:hover:not( :disabled ) {
-	background: #5474e8;
+	filter: brightness( 1.15 );
+	background: var( --inf-accent );
 }
 
 .inf-btn-danger {
-	border-color: #e5484d;
-	color: #ff9498;
+	border-color: var( --inf-danger );
+	color: var( --inf-danger );
 }
 
 .inf-btn-subtle {
 	border: 0;
 	background: transparent;
-	color: rgba( 230, 230, 230, 0.6 );
+	color: var( --inf-muted );
 }
 
 .inf-card {
 	position: absolute;
-	width: 220px;
-	background: #26262b;
-	color: #e6e6e6;
-	border: 1px solid #4a4a52;
+	width: 230px;
+	background: var( --inf-surface );
+	color: var( --inf-text );
+	border: 1px solid var( --inf-border );
 	border-radius: 6px;
-	box-shadow: 0 4px 16px rgba( 0, 0, 0, 0.5 );
+	box-shadow: 0 4px 16px var( --inf-shadow );
 	font-size: 12px;
 	z-index: 5;
 }
@@ -117,7 +160,7 @@
 	align-items: center;
 	gap: 4px;
 	padding: 5px 6px 5px 10px;
-	border-bottom: 1px solid #3a3a42;
+	border-bottom: 1px solid var( --inf-border );
 	cursor: move;
 }
 
@@ -132,7 +175,7 @@
 .inf-icon-btn {
 	background: transparent;
 	border: 0;
-	color: #9a9aa2;
+	color: var( --inf-muted );
 	cursor: pointer;
 	font-size: 12px;
 	padding: 1px 4px;
@@ -141,13 +184,13 @@
 }
 
 .inf-icon-btn:hover:not( :disabled ) {
-	background: #3a3a42;
-	color: #fff;
+	background: var( --inf-surface-2 );
+	color: var( --inf-text );
 }
 
 .inf-icon-btn.inf-pinned {
 	filter: none;
-	color: #ffc53d;
+	color: #d99000;
 }
 
 .inf-card-body {
@@ -155,13 +198,15 @@
 	display: flex;
 	flex-direction: column;
 	gap: 7px;
+	max-height: 60vh;
+	overflow-y: auto;
 }
 
 .inf-input {
-	background: #1b1b1f;
-	border: 1px solid #4a4a52;
+	background: var( --inf-bg );
+	border: 1px solid var( --inf-border );
 	border-radius: 4px;
-	color: #e6e6e6;
+	color: var( --inf-text );
 	font-size: 12px;
 	padding: 4px 6px;
 	width: 100%;
@@ -180,8 +225,19 @@
 	gap: 6px;
 }
 
+.inf-check {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+}
+
+.inf-check input {
+	margin: 0;
+}
+
 .inf-link-go {
-	color: #9ab4ff;
+	color: var( --inf-link );
 	text-decoration: none;
 	font-size: 14px;
 }
@@ -196,23 +252,49 @@
 	width: 16px;
 	height: 16px;
 	border-radius: 50%;
-	border: 1px solid rgba( 255, 255, 255, 0.25 );
+	border: 1px solid var( --inf-border );
 	cursor: pointer;
 	padding: 0;
 }
 
 .inf-swatch-active {
-	outline: 2px solid #fff;
+	outline: 2px solid var( --inf-text );
 	outline-offset: 1px;
 }
 
 .inf-section-title {
 	font-weight: bold;
-	color: #9a9aa2;
+	color: var( --inf-muted );
 	text-transform: uppercase;
 	font-size: 10px;
 	letter-spacing: 0.05em;
 	margin-top: 2px;
+}
+
+.inf-rel-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.inf-rel-item {
+	display: block;
+	width: 100%;
+	background: transparent;
+	border: 0;
+	color: var( --inf-text );
+	padding: 3px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	text-align: left;
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.inf-rel-item:hover {
+	background: var( --inf-surface-2 );
 }
 
 .inf-evidence {
@@ -230,7 +312,7 @@
 	gap: 4px;
 	padding: 6px;
 	padding-right: 22px;
-	background: #1f1f24;
+	background: var( --inf-surface-2 );
 	border-radius: 4px;
 }
 
@@ -241,8 +323,21 @@
 }
 
 .inf-muted {
-	color: #85858d;
+	color: var( --inf-muted );
 	font-style: italic;
+}
+
+.inf-page-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.inf-page-editor textarea {
+	min-height: 110px;
+	resize: vertical;
+	font-family: monospace, monospace;
+	font-size: 11px;
 }
 
 .inf-tag-chooser {
@@ -259,7 +354,7 @@
 	gap: 7px;
 	background: transparent;
 	border: 0;
-	color: #e6e6e6;
+	color: var( --inf-text );
 	padding: 4px 6px;
 	border-radius: 4px;
 	cursor: pointer;
@@ -268,7 +363,7 @@
 }
 
 .inf-tag-option:hover {
-	background: #3a3a42;
+	background: var( --inf-surface-2 );
 }
 
 .inf-tag-dot {
@@ -287,7 +382,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	color: #85858d;
+	color: var( --inf-muted, #85858d );
 	font-style: italic;
-	background: #1b1b1f;
+	background: var( --inf-bg, #eaecf0 );
 }

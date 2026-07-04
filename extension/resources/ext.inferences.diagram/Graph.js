@@ -35,9 +35,10 @@
 	var MIN_ZOOM = 0.2;
 	var MAX_ZOOM = 2.5;
 
+	// Mid-tone colors that read on both the light and dark canvas.
 	var PALETTE = [
-		'#f0f0f0', '#e5484d', '#f76b15', '#ffc53d', '#46a758',
-		'#00a2c7', '#3e63dd', '#8e4ec6', '#e93d82', '#8d8d8d'
+		'#8d8d8d', '#e5484d', '#f76b15', '#d9a514', '#46a758',
+		'#00a2c7', '#3e63dd', '#8e4ec6', '#e93d82', '#63635e'
 	];
 
 	function clamp( v, lo, hi ) {
@@ -74,6 +75,7 @@
 				zoom: clamp( Number( raw.view && raw.view.zoom ) || 1, MIN_ZOOM, MAX_ZOOM )
 			},
 			tags: {},
+			types: {},
 			things: {},
 			relationships: {},
 			nextId: Math.max( 1, Math.floor( Number( raw.nextId ) || 1 ) )
@@ -93,12 +95,21 @@
 				color: String( t.color || PALETTE[ 1 ] )
 			};
 		} );
+		Object.keys( raw.types || {} ).forEach( function ( id ) {
+			var t = raw.types[ id ] || {};
+			seen( id );
+			doc.types[ id ] = {
+				name: String( t.name || '' ),
+				color: String( t.color || PALETTE[ 1 ] )
+			};
+		} );
 		Object.keys( raw.things || {} ).forEach( function ( id ) {
 			var t = raw.things[ id ] || {};
 			seen( id );
 			doc.things[ id ] = {
 				name: String( t.name || '' ),
 				color: String( t.color || PALETTE[ 0 ] ),
+				type: ( t.type != null && doc.types[ t.type ] ) ? String( t.type ) : null,
 				x: Number( t.x ) || 0,
 				y: Number( t.y ) || 0,
 				pinned: !!t.pinned,
@@ -144,6 +155,7 @@
 				hx: Number( r.hx ) || 0,
 				hy: Number( r.hy ) || 0,
 				hset: !!r.hset && !isNaN( Number( r.hx ) ) && !isNaN( Number( r.hy ) ),
+				inferred: !!r.inferred,
 				pinned: !!r.pinned,
 				evidence: []
 			};
@@ -169,6 +181,12 @@
 	 * @param {Function} [options.onDirtyChange] called with (isDirty)
 	 * @param {Function} [options.resolveHref] title -> url (or null)
 	 * @param {Function} [options.navigate] called with (title) on view-mode node click
+	 * @param {Function} [options.isDark] returns whether the page is in dark
+	 *   mode; defaults to prefers-color-scheme. Call refreshTheme() when it
+	 *   changes.
+	 * @param {Object} [options.pageApi] optional { load(title), save(title, text) }
+	 *   returning thenables, enabling wiki-page editing from thing cards
+	 * @param {Function} [options.notify] called with (message, isError)
 	 */
 	function Graph( container, options ) {
 		options = options || {};
@@ -177,6 +195,12 @@
 		this.onDirtyChange = options.onDirtyChange || function () {};
 		this.resolveHref = options.resolveHref || function () { return null; };
 		this.navigate = options.navigate || function () {};
+		this.pageApi = options.pageApi || null;
+		this.notify = options.notify || function () {};
+		this.isDark = options.isDark || function () {
+			return window.matchMedia &&
+				window.matchMedia( '(prefers-color-scheme: dark)' ).matches;
+		};
 		this.doc = normalizeDoc( options.doc );
 
 		this.dirty = false;
@@ -189,11 +213,47 @@
 		this.tagChooser = null;
 
 		this._buildDom();
+		this._applyThemeClass();
 		this._bindEvents();
 		this._openPinnedCards();
 		this.zoomToFit( true );
 		this._scheduleRender();
 	}
+
+	// ---- theming ----------------------------------------------------------
+
+	Graph.prototype._applyThemeClass = function () {
+		var dark = !!this.isDark();
+		this.container.classList.toggle( 'inf-theme-dark', dark );
+		this.container.classList.toggle( 'inf-theme-light', !dark );
+		this._themeCache = null;
+	};
+
+	/** Re-evaluate isDark() and re-render; call when the page theme changes. */
+	Graph.prototype.refreshTheme = function () {
+		this._applyThemeClass();
+		this._scheduleRender();
+	};
+
+	Graph.prototype._theme = function () {
+		if ( !this._themeCache ) {
+			var cs = getComputedStyle( this.container );
+			var v = function ( name, fallback ) {
+				var value = cs.getPropertyValue( name ).trim();
+				return value || fallback;
+			};
+			this._themeCache = {
+				bg: v( '--inf-bg', '#1b1b1f' ),
+				gridRgb: v( '--inf-grid-rgb', '128, 128, 128' ),
+				nodeFill: v( '--inf-node-fill', '#26262b' ),
+				text: v( '--inf-text', '#e6e6e6' ),
+				muted: v( '--inf-muted', '#9a9aa2' ),
+				link: v( '--inf-link', '#9ab4ff' ),
+				ghostRgb: v( '--inf-ghost-rgb', '255, 255, 255' )
+			};
+		}
+		return this._themeCache;
+	};
 
 	Graph.prototype._buildDom = function () {
 		this.container.classList.add( 'inf-graph' );
@@ -442,6 +502,7 @@
 			hx: 0,
 			hy: 0,
 			hset: false,
+			inferred: false,
 			pinned: false,
 			evidence: []
 		};
@@ -513,6 +574,24 @@
 			color: PALETTE[ 1 + ( used % ( PALETTE.length - 1 ) ) ]
 		};
 		return id;
+	};
+
+	Graph.prototype._addType = function ( name ) {
+		var id = this._newId();
+		var used = Object.keys( this.doc.types ).length;
+		this.doc.types[ id ] = {
+			name: name,
+			color: PALETTE[ 1 + ( ( used + 3 ) % ( PALETTE.length - 1 ) ) ]
+		};
+		return id;
+	};
+
+	/** A typed thing takes its type's color so all e.g. "program"s match. */
+	Graph.prototype._thingColor = function ( thing ) {
+		if ( thing.type && this.doc.types[ thing.type ] ) {
+			return this.doc.types[ thing.type ].color;
+		}
+		return thing.color;
 	};
 
 	// ---- selection & view -------------------------------------------------
@@ -590,8 +669,11 @@
 
 	Graph.prototype.destroy = function () {
 		this._resizeObserver.disconnect();
+		if ( this._mq && this._mq.removeEventListener ) {
+			this._mq.removeEventListener( 'change', this._mqListener );
+		}
 		this.container.textContent = '';
-		this.container.classList.remove( 'inf-graph' );
+		this.container.classList.remove( 'inf-graph', 'inf-theme-dark', 'inf-theme-light' );
 	};
 
 	// ---- events -----------------------------------------------------------
@@ -634,6 +716,16 @@
 		this.container.addEventListener( 'keydown', function ( e ) {
 			self._onKeyDown( e );
 		} );
+
+		if ( window.matchMedia ) {
+			this._mq = window.matchMedia( '(prefers-color-scheme: dark)' );
+			this._mqListener = function () {
+				self.refreshTheme();
+			};
+			if ( this._mq.addEventListener ) {
+				this._mq.addEventListener( 'change', this._mqListener );
+			}
+		}
 	};
 
 	Graph.prototype._onPointerDown = function ( e ) {
@@ -1112,11 +1204,54 @@
 		} );
 		card.fields.name = name;
 
-		this._colorRow( body, thing.color, function ( color ) {
-			self._pushUndo();
-			thing.color = color;
-			self._markDirty();
+		// type: shared name + color, e.g. "program"
+		var typeSelect = el( 'select', 'inf-input', body );
+		typeSelect.disabled = !this.editable;
+		var noType = el( 'option', null, typeSelect );
+		noType.value = '';
+		noType.textContent = '(no type)';
+		Object.keys( this.doc.types ).forEach( function ( typeId ) {
+			var opt = el( 'option', null, typeSelect );
+			opt.value = typeId;
+			opt.textContent = self.doc.types[ typeId ].name || '(unnamed)';
 		} );
+		var newTypeOpt = el( 'option', null, typeSelect );
+		newTypeOpt.value = '__new__';
+		newTypeOpt.textContent = '+ new type…';
+		typeSelect.value = thing.type || '';
+		typeSelect.addEventListener( 'change', function () {
+			if ( typeSelect.value === '__new__' ) {
+				var typeName = window.prompt( 'Type name (e.g. program):' );
+				if ( typeName && typeName.trim() ) {
+					self._pushUndo();
+					thing.type = self._addType( typeName.trim() );
+					self._markDirty();
+				}
+			} else {
+				self._pushUndo();
+				thing.type = typeSelect.value || null;
+				self._markDirty();
+			}
+			self._rebuildCard( card );
+		} );
+
+		// color: a type's color is shared by every thing of that type
+		var type = thing.type ? this.doc.types[ thing.type ] : null;
+		if ( type ) {
+			var typeLabel = el( 'div', 'inf-section-title', body );
+			typeLabel.textContent = 'Type color (all "' + ( type.name || '?' ) + '")';
+			this._colorRow( body, type.color, function ( color ) {
+				self._pushUndo();
+				type.color = color;
+				self._markDirty();
+			} );
+		} else {
+			this._colorRow( body, thing.color, function ( color ) {
+				self._pushUndo();
+				thing.color = color;
+				self._markDirty();
+			} );
+		}
 
 		var linkRow = el( 'div', 'inf-row', body );
 		var link = el( 'input', 'inf-input', linkRow );
@@ -1127,7 +1262,8 @@
 			self._pushUndo();
 			thing.link = link.value.trim();
 			self._markDirty();
-			updateGo();
+			// refresh dependent widgets (open-link arrow, page editor)
+			self._rebuildCard( card );
 		} );
 		link.addEventListener( 'keydown', function ( e ) {
 			e.stopPropagation();
@@ -1144,6 +1280,36 @@
 		}
 		updateGo();
 
+		// every relationship this thing takes part in
+		var relIds = Object.keys( this.doc.relationships ).filter( function ( rid ) {
+			var rel = self.doc.relationships[ rid ];
+			return rel.from === card.id || rel.to === card.id;
+		} );
+		if ( relIds.length ) {
+			var relTitle = el( 'div', 'inf-section-title', body );
+			relTitle.textContent = 'Relationships';
+			var relList = el( 'div', 'inf-rel-list', body );
+			relIds.forEach( function ( rid ) {
+				var rel = self.doc.relationships[ rid ];
+				var outgoing = rel.from === card.id;
+				var other = outgoing ? rel.to : rel.from;
+				var tag = rel.tag ? self.doc.tags[ rel.tag ] : null;
+				var row = el( 'button', 'inf-rel-item', relList );
+				row.type = 'button';
+				row.textContent = ( outgoing ? '→ ' : '← ' ) +
+					( tag && tag.name ? tag.name + ' ' : '' ) +
+					( rel.inferred ? '∴ ' : '' ) +
+					self._endpointLabel( other );
+				row.addEventListener( 'click', function () {
+					self._select( 'rel', rid );
+				} );
+			} );
+		}
+
+		if ( this.pageApi && this.editable ) {
+			this._buildPageEditor( body, thing );
+		}
+
 		if ( this.editable ) {
 			var del = el( 'button', 'inf-btn inf-btn-danger', body );
 			del.type = 'button';
@@ -1152,6 +1318,74 @@
 				self._deleteThing( card.id );
 			} );
 		}
+	};
+
+	/**
+	 * Edit the linked wiki page's full source without leaving the canvas.
+	 * Loads through pageApi.load and saves through pageApi.save; creates
+	 * the page if it doesn't exist yet.
+	 */
+	Graph.prototype._buildPageEditor = function ( body, thing ) {
+		var self = this;
+		var section = el( 'div', 'inf-page-editor', body );
+		var toggle = el( 'button', 'inf-btn', section );
+		toggle.type = 'button';
+		var editorEl = null;
+
+		toggle.textContent = 'Edit linked page';
+		toggle.disabled = !thing.link;
+		toggle.title = thing.link ?
+			'Edit "' + thing.link + '"' : 'Set a wiki page link first';
+
+		toggle.addEventListener( 'click', function () {
+			if ( editorEl ) {
+				editorEl.remove();
+				editorEl = null;
+				return;
+			}
+			if ( !thing.link ) {
+				return;
+			}
+			editorEl = el( 'div', 'inf-page-editor', section );
+			var status = el( 'div', 'inf-muted', editorEl );
+			status.textContent = 'Loading ' + thing.link + '…';
+			var textarea = el( 'textarea', 'inf-input', editorEl );
+			textarea.disabled = true;
+			var save = el( 'button', 'inf-btn inf-btn-primary', editorEl );
+			save.type = 'button';
+			save.textContent = 'Save page';
+			save.disabled = true;
+
+			self.pageApi.load( thing.link ).then( function ( result ) {
+				textarea.value = result.text || '';
+				textarea.disabled = false;
+				save.disabled = false;
+				status.textContent = result.exists ?
+					'Editing "' + thing.link + '"' :
+					'"' + thing.link + '" does not exist yet — saving will create it.';
+			}, function () {
+				status.textContent = 'Could not load "' + thing.link + '".';
+			} );
+
+			textarea.addEventListener( 'keydown', function ( e ) {
+				e.stopPropagation();
+			} );
+			save.addEventListener( 'click', function () {
+				save.disabled = true;
+				save.textContent = 'Saving…';
+				self.pageApi.save( thing.link, textarea.value ).then( function () {
+					save.disabled = false;
+					save.textContent = 'Save page';
+					status.textContent = 'Saved "' + thing.link + '".';
+					self.notify( 'Saved page "' + thing.link + '".', false );
+				}, function ( err ) {
+					save.disabled = false;
+					save.textContent = 'Save page';
+					status.textContent = 'Saving failed.';
+					self.notify( 'Saving "' + thing.link + '" failed: ' + err, true );
+				} );
+			} );
+		} );
 	};
 
 	/** Human label for an endpoint: a thing's name, or a bracketed edge description. */
@@ -1234,6 +1468,19 @@
 				self._markDirty();
 			} );
 		}
+
+		// inferred: this connection is deduced, not directly observed
+		var infLabel = el( 'label', 'inf-check', body );
+		var infBox = el( 'input', null, infLabel );
+		infBox.type = 'checkbox';
+		infBox.checked = !!rel.inferred;
+		infBox.disabled = !this.editable;
+		infLabel.appendChild( document.createTextNode( '∴ inferred (not directly observed)' ) );
+		infBox.addEventListener( 'change', function () {
+			self._pushUndo();
+			rel.inferred = infBox.checked;
+			self._markDirty();
+		} );
 
 		// evidence
 		var evTitle = el( 'div', 'inf-section-title', body );
@@ -1355,7 +1602,7 @@
 		var v = this.doc.view;
 
 		ctx.setTransform( 1, 0, 0, 1, 0, 0 );
-		ctx.fillStyle = '#1b1b1f';
+		ctx.fillStyle = this._theme().bg;
 		ctx.fillRect( 0, 0, this.canvas.width, this.canvas.height );
 
 		// world transform
@@ -1381,10 +1628,10 @@
 	// Port of the native app's draw_grid: adaptive power-of-two spacing.
 	Graph.prototype._drawGrid = function ( ctx, view, zoom ) {
 		var step = Math.pow( 2, Math.round( Math.log2( 60 / zoom ) ) );
-		var self = this;
+		var gridRgb = this._theme().gridRgb;
 		[ [ step, 0.10 ], [ step * 4, 0.22 ] ].forEach( function ( pair ) {
 			var s = pair[ 0 ];
-			ctx.strokeStyle = 'rgba(128,128,128,' + pair[ 1 ] + ')';
+			ctx.strokeStyle = 'rgba(' + gridRgb + ',' + pair[ 1 ] + ')';
 			ctx.lineWidth = 1 / zoom;
 			ctx.beginPath();
 			for ( var x = Math.floor( view.left / s ) * s; x <= view.right; x += s ) {
@@ -1401,6 +1648,7 @@
 
 	Graph.prototype._drawRelationships = function ( ctx, zoom ) {
 		var self = this;
+		var theme = this._theme();
 		Object.keys( this.doc.relationships ).forEach( function ( id ) {
 			var rel = self.doc.relationships[ id ];
 			var a = self._anchorOf( rel.from );
@@ -1417,10 +1665,14 @@
 
 			ctx.strokeStyle = color;
 			ctx.lineWidth = ( selected || hovered ? 2.5 : 1.5 );
+			if ( rel.inferred ) {
+				ctx.setLineDash( [ 7, 5 ] );
+			}
 			ctx.beginPath();
 			ctx.moveTo( start.x, start.y );
 			ctx.quadraticCurveTo( h.x, h.y, end.x, end.y );
 			ctx.stroke();
+			ctx.setLineDash( [] );
 
 			// arrowhead pointing into the target
 			var angle = Math.atan2( end.y - h.y, end.x - h.x );
@@ -1436,6 +1688,9 @@
 			// label pill at the curve midpoint (also the anchor for
 			// relationships that point at this relationship)
 			var label = tag ? tag.name : '';
+			if ( rel.inferred ) {
+				label = '∴' + ( label ? ' ' + label : '' );
+			}
 			if ( rel.evidence.length ) {
 				label += ( label ? ' ' : '' ) + '⧉' + rel.evidence.length;
 			}
@@ -1444,16 +1699,20 @@
 			}
 			if ( label ) {
 				var mid = self._bezierPoint( rel, 0.5 );
-				ctx.font = '11px sans-serif';
+				ctx.font = ( rel.inferred ? 'italic ' : '' ) + '11px sans-serif';
 				var tw = ctx.measureText( label ).width;
-				ctx.fillStyle = '#26262b';
+				ctx.fillStyle = theme.nodeFill;
 				roundRect( ctx, mid.x - tw / 2 - 6, mid.y - 9, tw + 12, 18, 9 );
 				ctx.fill();
 				ctx.strokeStyle = color;
 				ctx.lineWidth = 1;
+				if ( rel.inferred ) {
+					ctx.setLineDash( [ 3, 3 ] );
+				}
 				roundRect( ctx, mid.x - tw / 2 - 6, mid.y - 9, tw + 12, 18, 9 );
 				ctx.stroke();
-				ctx.fillStyle = '#e6e6e6';
+				ctx.setLineDash( [] );
+				ctx.fillStyle = theme.text;
 				ctx.textAlign = 'center';
 				ctx.textBaseline = 'middle';
 				ctx.fillText( label, mid.x, mid.y );
@@ -1464,7 +1723,7 @@
 				ctx.save();
 				ctx.translate( h.x, h.y );
 				ctx.rotate( Math.PI / 4 );
-				ctx.fillStyle = '#ffffff';
+				ctx.fillStyle = theme.text;
 				ctx.fillRect( -5 / zoom, -5 / zoom, 10 / zoom, 10 / zoom );
 				ctx.restore();
 			}
@@ -1495,6 +1754,7 @@
 
 	Graph.prototype._drawThings = function ( ctx, zoom ) {
 		var self = this;
+		var theme = this._theme();
 		ctx.textAlign = 'center';
 		ctx.textBaseline = 'middle';
 		Object.keys( this.doc.things ).forEach( function ( id ) {
@@ -1502,15 +1762,15 @@
 			var selected = self.selection && self.selection.kind === 'thing' && self.selection.id === id;
 			var hovered = self.hover && self.hover.kind === 'thing' && self.hover.id === id;
 
-			ctx.fillStyle = '#26262b';
+			ctx.fillStyle = theme.nodeFill;
 			ctx.beginPath();
 			ctx.arc( t.x, t.y, THING_RADIUS, 0, Math.PI * 2 );
 			ctx.fill();
-			ctx.strokeStyle = t.color;
+			ctx.strokeStyle = self._thingColor( t );
 			ctx.lineWidth = selected || hovered ? 3 : 1.5;
 			ctx.stroke();
 			if ( selected ) {
-				ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+				ctx.strokeStyle = 'rgba(' + theme.ghostRgb + ',0.35)';
 				ctx.lineWidth = 1;
 				ctx.beginPath();
 				ctx.arc( t.x, t.y, THING_RADIUS + 4, 0, Math.PI * 2 );
@@ -1518,7 +1778,7 @@
 			}
 
 			// name, wrapped to the circle
-			ctx.fillStyle = '#e6e6e6';
+			ctx.fillStyle = theme.text;
 			ctx.font = '12px sans-serif';
 			var lines = wrapText( ctx, t.name || '…', 54, 3 );
 			var lh = 13;
@@ -1526,10 +1786,17 @@
 				ctx.fillText( line, t.x, t.y + ( i - ( lines.length - 1 ) / 2 ) * lh );
 			} );
 
+			// type caption under the circle
+			if ( t.type && self.doc.types[ t.type ] ) {
+				ctx.font = 'italic 10px sans-serif';
+				ctx.fillStyle = theme.muted;
+				ctx.fillText( self.doc.types[ t.type ].name, t.x, t.y + THING_RADIUS + 11 );
+			}
+
 			// link indicator
 			if ( t.link ) {
 				ctx.font = '11px sans-serif';
-				ctx.fillStyle = '#9ab4ff';
+				ctx.fillStyle = theme.link;
 				ctx.fillText( '↗', t.x + THING_RADIUS * 0.72, t.y - THING_RADIUS * 0.72 );
 			}
 		} );
@@ -1541,7 +1808,8 @@
 			return;
 		}
 		var from = this._anchorOf( d.id );
-		ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+		var ghostRgb = this._theme().ghostRgb;
+		ctx.strokeStyle = 'rgba(' + ghostRgb + ',0.55)';
 		ctx.lineWidth = 1.5;
 		ctx.setLineDash( [ 6, 5 ] );
 		ctx.beginPath();
@@ -1551,7 +1819,7 @@
 		ctx.setLineDash( [] );
 		var over = this._thingAt( d.ghostTo ) || this._relAt( d.ghostTo );
 		if ( !over || over === d.id ) {
-			ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+			ctx.strokeStyle = 'rgba(' + ghostRgb + ',0.35)';
 			ctx.beginPath();
 			ctx.arc( d.ghostTo.x, d.ghostTo.y, THING_RADIUS, 0, Math.PI * 2 );
 			ctx.stroke();
