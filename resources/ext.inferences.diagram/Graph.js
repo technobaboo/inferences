@@ -1,20 +1,36 @@
 /**
- * Inferences diagram canvas — standalone, no MediaWiki dependencies.
+ * Inferences canvas — a graph VIEW over a wiki, not a document editor.
  *
- * A port of the native egui app's scene: an infinite pannable/zoomable
- * canvas with an adaptive grid, "things" (circular nodes, optionally
- * linked to wiki pages), tagged "relationships" (curved edges carrying
- * evidence), and pinnable inspector cards.
+ * Things are wiki pages, relationships are {{#inference:…}} calls in
+ * those pages' wikitext, types are categories. All semantic edits are
+ * delegated to a pluggable async store (WikiStore against MediaWiki,
+ * a mock in the dev harness) and become real page edits immediately;
+ * only layout (positions, curve handles, pins, pan/zoom) belongs to the
+ * view itself and is saved separately.
  *
  * Interactions (edit mode):
- *   right-click empty space ... add a thing
- *   right-drag from a thing .. connect it (release on empty space to
- *                              create and connect a new thing)
- *   left-drag a thing ........ move it
+ *   right-click empty space ... add a thing (creates the page)
+ *   right-drag from a thing .. connect it (writes an inference into the
+ *                              source page; release on empty space to
+ *                              create and connect a new page)
+ *   left-drag a thing ........ move it (layout)
  *   left/middle-drag empty ... pan;  wheel ............... zoom
  *   click thing/edge ......... open inspector card (pin to keep open)
- *   drag the diamond ......... reshape a selected edge
- *   Delete ................... delete selection;  Ctrl+Z/Y ... undo/redo
+ *   drag the diamond ......... reshape a selected edge (layout)
+ *   Delete ................... remove selection (edge: real edit;
+ *                              thing: removed from the view)
+ *
+ * The store interface (all mutators return thenables and patch
+ * graph.doc themselves before resolving):
+ *   knownTags() / knownTypes()          -> string[]
+ *   tagColor( name )                    -> '#rrggbb'
+ *   createThing( title, pos )           -> resolves new id
+ *   renameThing( id, newTitle )         -> resolves new id
+ *   removeThing( id )
+ *   addEdge( fromId, toId, tag )        -> resolves new edge id
+ *   updateEdge( id, changes )
+ *   removeEdge( id )
+ *   setType( id, typeName|null )
  *
  * Exported as `module.exports` (ResourceLoader / CommonJS) and as
  * `window.InferencesGraph` (dev harness).
@@ -30,16 +46,12 @@
 
 	var THING_RADIUS = 32;
 	var REL_ANCHOR_RADIUS = 12; // rim radius when an edge is the endpoint
-	var CLICK_SLOP = 4; // px of screen movement that still counts as a click
+	var CLICK_SLOP = 4;
 	var RIGHT_DEADZONE = 10; // matches the native app's radial deadzone
 	var MIN_ZOOM = 0.2;
 	var MAX_ZOOM = 2.5;
-
-	// Mid-tone colors that read on both the light and dark canvas.
-	var PALETTE = [
-		'#8d8d8d', '#e5484d', '#f76b15', '#d9a514', '#46a758',
-		'#00a2c7', '#3e63dd', '#8e4ec6', '#e93d82', '#63635e'
-	];
+	// impossible page title (titles can't start with a space)
+	var PENDING = ' pending';
 
 	function clamp( v, lo, hi ) {
 		return v < lo ? lo : ( v > hi ? hi : v );
@@ -61,136 +73,22 @@
 	}
 
 	/**
-	 * Coerce an arbitrary parsed JSON value into a well-formed document,
-	 * dropping relationships whose endpoints are missing (the native app
-	 * does the same in its retain() pass).
-	 */
-	function normalizeDoc( raw ) {
-		raw = ( raw && typeof raw === 'object' ) ? raw : {};
-		var doc = {
-			version: 1,
-			view: {
-				x: Number( raw.view && raw.view.x ) || 0,
-				y: Number( raw.view && raw.view.y ) || 0,
-				zoom: clamp( Number( raw.view && raw.view.zoom ) || 1, MIN_ZOOM, MAX_ZOOM )
-			},
-			tags: {},
-			types: {},
-			things: {},
-			relationships: {},
-			nextId: Math.max( 1, Math.floor( Number( raw.nextId ) || 1 ) )
-		};
-		var maxId = 0;
-		function seen( id ) {
-			var n = parseInt( id, 10 );
-			if ( !isNaN( n ) && n > maxId ) {
-				maxId = n;
-			}
-		}
-		Object.keys( raw.tags || {} ).forEach( function ( id ) {
-			var t = raw.tags[ id ] || {};
-			seen( id );
-			doc.tags[ id ] = {
-				name: String( t.name || '' ),
-				color: String( t.color || PALETTE[ 1 ] )
-			};
-		} );
-		Object.keys( raw.types || {} ).forEach( function ( id ) {
-			var t = raw.types[ id ] || {};
-			seen( id );
-			doc.types[ id ] = {
-				name: String( t.name || '' ),
-				color: String( t.color || PALETTE[ 1 ] )
-			};
-		} );
-		Object.keys( raw.things || {} ).forEach( function ( id ) {
-			var t = raw.things[ id ] || {};
-			seen( id );
-			doc.things[ id ] = {
-				name: String( t.name || '' ),
-				color: String( t.color || PALETTE[ 0 ] ),
-				type: ( t.type != null && doc.types[ t.type ] ) ? String( t.type ) : null,
-				x: Number( t.x ) || 0,
-				y: Number( t.y ) || 0,
-				pinned: !!t.pinned,
-				link: String( t.link || '' )
-			};
-		} );
-		// Relationship endpoints may be things OR other relationships
-		// (reification: "unix domain socket" -> the "connects" edge).
-		// Keep a relationship once both endpoints resolve to something
-		// kept; this fixpoint also drops self-references and cycles,
-		// mirroring the native app's retain() pass.
-		var candidates = {};
-		Object.keys( raw.relationships || {} ).forEach( function ( id ) {
-			var r = raw.relationships[ id ] || {};
-			seen( id );
-			if ( r.from == null || r.to == null || String( r.from ) === String( r.to ) ) {
-				return;
-			}
-			candidates[ id ] = r;
-		} );
-		var kept = {};
-		var changed = true;
-		while ( changed ) {
-			changed = false;
-			Object.keys( candidates ).forEach( function ( id ) {
-				if ( kept[ id ] ) {
-					return;
-				}
-				var r = candidates[ id ];
-				if ( ( doc.things[ r.from ] || kept[ r.from ] ) &&
-					( doc.things[ r.to ] || kept[ r.to ] ) ) {
-					kept[ id ] = r;
-					changed = true;
-				}
-			} );
-		}
-		Object.keys( kept ).forEach( function ( id ) {
-			var r = kept[ id ];
-			var rel = {
-				from: String( r.from ),
-				to: String( r.to ),
-				tag: ( r.tag != null && doc.tags[ r.tag ] ) ? String( r.tag ) : null,
-				hx: Number( r.hx ) || 0,
-				hy: Number( r.hy ) || 0,
-				hset: !!r.hset && !isNaN( Number( r.hx ) ) && !isNaN( Number( r.hy ) ),
-				inferred: !!r.inferred,
-				pinned: !!r.pinned,
-				evidence: []
-			};
-			( Array.isArray( r.evidence ) ? r.evidence : [] ).forEach( function ( ev ) {
-				rel.evidence.push( {
-					source: String( ( ev && ev.source ) || '' ),
-					snippet: String( ( ev && ev.snippet ) || '' )
-				} );
-			} );
-			doc.relationships[ id ] = rel;
-		} );
-		if ( doc.nextId <= maxId ) {
-			doc.nextId = maxId + 1;
-		}
-		return doc;
-	}
-
-	/**
 	 * @param {HTMLElement} container
 	 * @param {Object} options
-	 * @param {Object} options.doc parsed diagram document
+	 * @param {Object} options.store semantic backend (see file docblock)
+	 * @param {Object} options.doc initial {view, things, relationships}
 	 * @param {boolean} [options.editable=false]
-	 * @param {Function} [options.onDirtyChange] called with (isDirty)
+	 * @param {Function} [options.onDirtyChange] called with (layoutDirty)
 	 * @param {Function} [options.resolveHref] title -> url (or null)
 	 * @param {Function} [options.navigate] called with (title) on view-mode node click
-	 * @param {Function} [options.isDark] returns whether the page is in dark
-	 *   mode; defaults to prefers-color-scheme. Call refreshTheme() when it
-	 *   changes.
+	 * @param {Function} [options.isDark] page theme probe; default prefers-color-scheme
 	 * @param {Object} [options.pageApi] optional { load(title), save(title, text) }
-	 *   returning thenables, enabling wiki-page editing from thing cards
 	 * @param {Function} [options.notify] called with (message, isError)
 	 */
 	function Graph( container, options ) {
 		options = options || {};
 		this.container = container;
+		this.store = options.store;
 		this.editable = !!options.editable;
 		this.onDirtyChange = options.onDirtyChange || function () {};
 		this.resolveHref = options.resolveHref || function () { return null; };
@@ -201,15 +99,14 @@
 			return window.matchMedia &&
 				window.matchMedia( '(prefers-color-scheme: dark)' ).matches;
 		};
-		this.doc = normalizeDoc( options.doc );
+		this.doc = options.doc || { view: { x: 0, y: 0, zoom: 1 }, things: {}, relationships: {} };
 
-		this.dirty = false;
-		this.undoStack = [];
-		this.redoStack = [];
+		this.layoutDirty = false;
 		this.selection = null; // { kind: 'thing'|'rel', id }
 		this.hover = null;
-		this.drag = null; // active pointer gesture
-		this.cards = {}; // "kind:id" -> card record
+		this.drag = null;
+		this.pendingEdge = null; // { from, to } while the tag chooser is open
+		this.cards = {};
 		this.tagChooser = null;
 
 		this._buildDom();
@@ -229,7 +126,6 @@
 		this._themeCache = null;
 	};
 
-	/** Re-evaluate isDark() and re-render; call when the page theme changes. */
 	Graph.prototype.refreshTheme = function () {
 		this._applyThemeClass();
 		this._scheduleRender();
@@ -249,11 +145,14 @@
 				text: v( '--inf-text', '#e6e6e6' ),
 				muted: v( '--inf-muted', '#9a9aa2' ),
 				link: v( '--inf-link', '#9ab4ff' ),
+				danger: v( '--inf-danger', '#ff9498' ),
 				ghostRgb: v( '--inf-ghost-rgb', '255, 255, 255' )
 			};
 		}
 		return this._themeCache;
 	};
+
+	// ---- dom --------------------------------------------------------------
 
 	Graph.prototype._buildDom = function () {
 		this.container.classList.add( 'inf-graph' );
@@ -285,8 +184,8 @@
 
 	Graph.prototype._updateHint = function () {
 		this.hintEl.textContent = this.editable ?
-			'right-click: add thing · right-drag from a thing: connect · drag: pan · wheel: zoom' :
-			'drag: pan · wheel: zoom · click a thing to follow its link';
+			'right-click: add page · right-drag from a thing: connect · edits apply to the pages immediately' :
+			'drag: pan · wheel: zoom · click a thing to open its page';
 	};
 
 	Graph.prototype._resizeCanvas = function () {
@@ -301,7 +200,7 @@
 		this._scheduleRender();
 	};
 
-	// ---- coordinate transforms -------------------------------------------
+	// ---- coordinate transforms ---------------------------------------------
 
 	Graph.prototype._w2s = function ( x, y ) {
 		var v = this.doc.view;
@@ -324,7 +223,7 @@
 		return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 	};
 
-	// ---- hit testing ------------------------------------------------------
+	// ---- hit testing --------------------------------------------------------
 
 	Graph.prototype._thingAt = function ( wpt ) {
 		var ids = Object.keys( this.doc.things );
@@ -339,13 +238,6 @@
 		return null;
 	};
 
-	/**
-	 * Where an endpoint attaches: a thing's center, or — when the endpoint
-	 * is another relationship — that edge's midpoint (its label pill).
-	 * `r` is the rim radius to trim the curve to. The visited set guards
-	 * against cycles, which normalizeDoc already drops but a stale doc
-	 * mid-edit shouldn't be able to hang the renderer.
-	 */
 	Graph.prototype._anchorOf = function ( id, visited ) {
 		var t = this.doc.things[ id ];
 		if ( t ) {
@@ -365,7 +257,6 @@
 		return p;
 	};
 
-	/** Curve control point; edges never reshaped by hand follow their endpoints. */
 	Graph.prototype._relHandle = function ( rel, visited ) {
 		if ( rel.hset ) {
 			return { x: rel.hx, y: rel.hy };
@@ -422,139 +313,54 @@
 		return null;
 	};
 
-	// ---- mutations --------------------------------------------------------
+	// ---- store plumbing -----------------------------------------------------
 
-	Graph.prototype._pushUndo = function () {
-		this.undoStack.push( JSON.stringify( this.doc ) );
-		if ( this.undoStack.length > 100 ) {
-			this.undoStack.shift();
+	/** The store patched this.doc; refresh visuals and open cards. */
+	Graph.prototype.docChanged = function () {
+		var self = this;
+		if ( this.selection && !this._selectionExists() ) {
+			this.selection = null;
 		}
-		this.redoStack.length = 0;
-	};
-
-	Graph.prototype._markDirty = function () {
-		if ( !this.dirty ) {
-			this.dirty = true;
-			this.onDirtyChange( true );
-		}
+		Object.keys( this.cards ).forEach( function ( key ) {
+			var card = self.cards[ key ];
+			var exists = card.kind === 'thing' ?
+				self.doc.things[ card.id ] : self.doc.relationships[ card.id ];
+			if ( exists ) {
+				self._rebuildCard( card );
+			} else {
+				self._closeCard( key );
+			}
+		} );
 		this._scheduleRender();
 	};
 
-	Graph.prototype.markSaved = function () {
-		this.dirty = false;
-		this.onDirtyChange( false );
-	};
-
-	Graph.prototype.undo = function () {
-		if ( !this.undoStack.length ) {
-			return;
+	/** A card's object id changed (page rename); keep the card attached. */
+	Graph.prototype.remapId = function ( kind, oldId, newId ) {
+		var oldKey = kind + ':' + oldId;
+		var card = this.cards[ oldKey ];
+		if ( card ) {
+			delete this.cards[ oldKey ];
+			card.id = newId;
+			this.cards[ kind + ':' + newId ] = card;
 		}
-		this.redoStack.push( JSON.stringify( this.doc ) );
-		this.doc = normalizeDoc( JSON.parse( this.undoStack.pop() ) );
-		this._afterHistoryJump();
-	};
-
-	Graph.prototype.redo = function () {
-		if ( !this.redoStack.length ) {
-			return;
+		if ( this.selection && this.selection.kind === kind && this.selection.id === oldId ) {
+			this.selection.id = newId;
 		}
-		this.undoStack.push( JSON.stringify( this.doc ) );
-		this.doc = normalizeDoc( JSON.parse( this.redoStack.pop() ) );
-		this._afterHistoryJump();
 	};
 
-	Graph.prototype._afterHistoryJump = function () {
-		this.selection = null;
-		this._closeAllCards();
-		this._openPinnedCards();
-		this._markDirty();
-	};
-
-	Graph.prototype._newId = function () {
-		return String( this.doc.nextId++ );
-	};
-
-	Graph.prototype._addThing = function ( wpt ) {
-		this._pushUndo();
-		var id = this._newId();
-		this.doc.things[ id ] = {
-			name: '',
-			color: PALETTE[ 0 ],
-			x: wpt.x,
-			y: wpt.y,
-			pinned: false,
-			link: ''
-		};
-		this._markDirty();
-		this._select( 'thing', id );
-		this._focusCardField( 'thing:' + id, 'name' );
-		return id;
-	};
-
-	/** Endpoints may be thing ids or relationship ids. */
-	Graph.prototype._addRelationship = function ( fromId, toId ) {
-		this._pushUndo();
-		var id = this._newId();
-		this.doc.relationships[ id ] = {
-			from: fromId,
-			to: toId,
-			tag: null,
-			hx: 0,
-			hy: 0,
-			hset: false,
-			inferred: false,
-			pinned: false,
-			evidence: []
-		};
-		this._markDirty();
-		return id;
-	};
-
-	/**
-	 * Remove every relationship whose endpoint chain reaches a deleted
-	 * id — deleting an edge also deletes edges attached to that edge.
-	 */
-	Graph.prototype._cascadeDeleteRels = function ( dead ) {
+	Graph.prototype._storeCall = function ( promise, okMessage ) {
 		var self = this;
-		var changed = true;
-		while ( changed ) {
-			changed = false;
-			Object.keys( this.doc.relationships ).forEach( function ( rid ) {
-				var rel = self.doc.relationships[ rid ];
-				if ( dead[ rel.from ] || dead[ rel.to ] ) {
-					delete self.doc.relationships[ rid ];
-					self._closeCard( 'rel:' + rid );
-					dead[ rid ] = true;
-					changed = true;
-				}
-			} );
-		}
-	};
-
-	Graph.prototype._deleteThing = function ( id ) {
-		this._pushUndo();
-		delete this.doc.things[ id ];
-		this._closeCard( 'thing:' + id );
-		var dead = {};
-		dead[ id ] = true;
-		this._cascadeDeleteRels( dead );
-		if ( this.selection && !this._selectionExists() ) {
-			this.selection = null;
-		}
-		this._markDirty();
-	};
-
-	Graph.prototype._deleteRel = function ( id ) {
-		this._pushUndo();
-		delete this.doc.relationships[ id ];
-		this._closeCard( 'rel:' + id );
-		var dead = {};
-		dead[ id ] = true;
-		this._cascadeDeleteRels( dead );
-		if ( this.selection && !this._selectionExists() ) {
-			this.selection = null;
-		}
-		this._markDirty();
+		return Promise.resolve( promise ).then( function ( result ) {
+			self.docChanged();
+			if ( okMessage ) {
+				self.notify( okMessage, false );
+			}
+			return result;
+		}, function ( err ) {
+			self.docChanged();
+			self.notify( String( ( err && err.message ) || err ), true );
+			throw err;
+		} );
 	};
 
 	Graph.prototype._selectionExists = function () {
@@ -566,35 +372,76 @@
 			!!this.doc.relationships[ this.selection.id ];
 	};
 
-	Graph.prototype._addTag = function ( name ) {
-		var id = this._newId();
-		var used = Object.keys( this.doc.tags ).length;
-		this.doc.tags[ id ] = {
-			name: name,
-			color: PALETTE[ 1 + ( used % ( PALETTE.length - 1 ) ) ]
-		};
-		return id;
-	};
+	// ---- layout dirtiness ---------------------------------------------------
 
-	Graph.prototype._addType = function ( name ) {
-		var id = this._newId();
-		var used = Object.keys( this.doc.types ).length;
-		this.doc.types[ id ] = {
-			name: name,
-			color: PALETTE[ 1 + ( ( used + 3 ) % ( PALETTE.length - 1 ) ) ]
-		};
-		return id;
-	};
-
-	/** A typed thing takes its type's color so all e.g. "program"s match. */
-	Graph.prototype._thingColor = function ( thing ) {
-		if ( thing.type && this.doc.types[ thing.type ] ) {
-			return this.doc.types[ thing.type ].color;
+	Graph.prototype._markLayoutDirty = function () {
+		if ( !this.layoutDirty ) {
+			this.layoutDirty = true;
+			this.onDirtyChange( true );
 		}
-		return thing.color;
+		this._scheduleRender();
 	};
 
-	// ---- selection & view -------------------------------------------------
+	Graph.prototype.markLayoutSaved = function () {
+		this.layoutDirty = false;
+		this.onDirtyChange( false );
+	};
+
+	// ---- pending thing creation --------------------------------------------
+
+	Graph.prototype._beginCreateThing = function ( wpt ) {
+		if ( this.doc.things[ PENDING ] ) {
+			return;
+		}
+		this.doc.things[ PENDING ] = {
+			name: '',
+			color: '#8d8d8d',
+			type: null,
+			x: wpt.x,
+			y: wpt.y,
+			pinned: false,
+			missing: false,
+			pending: true
+		};
+		this._select( 'thing', PENDING );
+		this._focusCardField( 'thing:' + PENDING, 'name' );
+	};
+
+	Graph.prototype._cancelCreateThing = function () {
+		if ( this.doc.things[ PENDING ] ) {
+			delete this.doc.things[ PENDING ];
+			this._closeCard( 'thing:' + PENDING );
+			if ( this.selection && this.selection.id === PENDING ) {
+				this.selection = null;
+			}
+			this._scheduleRender();
+		}
+	};
+
+	Graph.prototype._commitCreateThing = function ( name, connectFrom ) {
+		var self = this;
+		var pendingThing = this.doc.things[ PENDING ];
+		if ( !pendingThing ) {
+			return;
+		}
+		name = name.trim();
+		if ( !name ) {
+			this._cancelCreateThing();
+			return;
+		}
+		var pos = { x: pendingThing.x, y: pendingThing.y };
+		this._cancelCreateThing();
+		this._storeCall( this.store.createThing( name, pos ) )
+			.then( function ( newId ) {
+				self._select( 'thing', newId );
+				if ( connectFrom && ( self.doc.things[ connectFrom ] ||
+					self.doc.relationships[ connectFrom ] ) ) {
+					self._beginEdge( connectFrom, newId );
+				}
+			}, function () {} );
+	};
+
+	// ---- selection & view ----------------------------------------------------
 
 	Graph.prototype._select = function ( kind, id ) {
 		this.selection = kind ? { kind: kind, id: id } : null;
@@ -642,24 +489,10 @@
 		return this.doc;
 	};
 
-	Graph.prototype.getDocJson = function () {
-		return JSON.stringify( this.doc, null, '\t' );
-	};
-
-	Graph.prototype.setDoc = function ( doc ) {
-		this.doc = normalizeDoc( doc );
-		this.undoStack.length = 0;
-		this.redoStack.length = 0;
-		this.selection = null;
-		this._closeAllCards();
-		this._openPinnedCards();
-		this.markSaved();
-		this._scheduleRender();
-	};
-
 	Graph.prototype.setEditable = function ( editable ) {
 		this.editable = !!editable;
 		this._cancelTagChooser();
+		this._cancelCreateThing();
 		this._closeAllCards();
 		this._openPinnedCards();
 		this.selection = null;
@@ -676,7 +509,7 @@
 		this.container.classList.remove( 'inf-graph', 'inf-theme-dark', 'inf-theme-light' );
 	};
 
-	// ---- events -----------------------------------------------------------
+	// ---- events ---------------------------------------------------------------
 
 	Graph.prototype._bindEvents = function () {
 		var self = this;
@@ -755,13 +588,11 @@
 			if ( handle ) {
 				start.mode = 'handle';
 				start.id = handle;
-				start.undoPushed = false;
 			} else if ( thing && this.editable ) {
 				start.mode = 'thing';
 				start.id = thing;
 				var t = this.doc.things[ thing ];
 				start.grabOffset = { x: t.x - wpt.x, y: t.y - wpt.y };
-				start.undoPushed = false;
 			} else if ( thing ) {
 				start.mode = 'clickThing';
 				start.id = thing;
@@ -775,7 +606,7 @@
 		} else if ( e.button === 2 ) {
 			var overThing = this._thingAt( wpt );
 			var overRel = overThing ? null : this._relAt( wpt );
-			if ( this.editable && ( overThing || overRel ) ) {
+			if ( this.editable && ( overThing || overRel ) && overThing !== PENDING ) {
 				start.mode = 'connect';
 				start.id = overThing || overRel;
 			} else if ( this.editable ) {
@@ -794,7 +625,6 @@
 		var wpt = this._s2w( pos.x, pos.y );
 
 		if ( !this.drag ) {
-			// hover feedback
 			var thing = this._thingAt( wpt );
 			this.hover = thing ? { kind: 'thing', id: thing } : null;
 			if ( !thing ) {
@@ -803,8 +633,7 @@
 					this.hover = { kind: 'rel', id: rel };
 				}
 			}
-			var linked = !this.editable && thing && this.doc.things[ thing ].link;
-			this.canvas.style.cursor = linked ? 'pointer' : ( thing ? 'grab' : '' );
+			this.canvas.style.cursor = ( !this.editable && thing ) ? 'pointer' : ( thing ? 'grab' : '' );
 			this._scheduleRender();
 			return;
 		}
@@ -824,24 +653,18 @@
 			v.y -= ( pos.y - d.lastScreen.y ) / v.zoom;
 			this.canvas.style.cursor = 'grabbing';
 		} else if ( d.mode === 'thing' && d.moved ) {
-			if ( !d.undoPushed ) {
-				this._pushUndo();
-				d.undoPushed = true;
-			}
 			var t = this.doc.things[ d.id ];
 			t.x = wpt.x + d.grabOffset.x;
 			t.y = wpt.y + d.grabOffset.y;
-			this._markDirty();
-		} else if ( d.mode === 'handle' && d.moved ) {
-			if ( !d.undoPushed ) {
-				this._pushUndo();
-				d.undoPushed = true;
+			if ( !t.pending ) {
+				this._markLayoutDirty();
 			}
-			var rel = this.doc.relationships[ d.id ];
-			rel.hx = wpt.x;
-			rel.hy = wpt.y;
-			rel.hset = true;
-			this._markDirty();
+		} else if ( d.mode === 'handle' && d.moved ) {
+			var rel2 = this.doc.relationships[ d.id ];
+			rel2.hx = wpt.x;
+			rel2.hy = wpt.y;
+			rel2.hset = true;
+			this._markLayoutDirty();
 		} else if ( d.mode === 'connect' ) {
 			d.ghostTo = wpt;
 		}
@@ -860,26 +683,27 @@
 		var wpt = this._s2w( pos.x, pos.y );
 
 		if ( d.mode === 'rightAdd' && !d.moved ) {
-			this._addThing( wpt );
+			this._beginCreateThing( wpt );
 		} else if ( d.mode === 'connect' ) {
 			var target = this._thingAt( wpt ) || this._relAt( wpt );
 			if ( target === d.id ) {
-				// right-click without dragging: open the card
 				this._select( this.doc.things[ d.id ] ? 'thing' : 'rel', d.id );
-			} else {
-				if ( !target ) {
-					target = this._addThing( wpt );
+			} else if ( target && target !== PENDING ) {
+				this._beginEdge( d.id, target, pos );
+			} else if ( !target ) {
+				// create a new page there, then connect to it
+				this._beginCreateThing( wpt );
+				var card = this.cards[ 'thing:' + PENDING ];
+				if ( card ) {
+					card.connectFrom = d.id;
 				}
-				var relId = this._addRelationship( d.id, target );
-				this._select( 'rel', relId );
-				this._openTagChooser( relId, pos );
 			}
 		} else if ( d.mode === 'thing' && !d.moved ) {
 			this._select( 'thing', d.id );
 		} else if ( d.mode === 'clickThing' && !d.moved ) {
 			var t = this.doc.things[ d.id ];
-			if ( !this.editable && t.link ) {
-				this.navigate( t.link );
+			if ( !this.editable && !t.pending ) {
+				this.navigate( d.id );
 			} else {
 				this._select( 'thing', d.id );
 			}
@@ -887,6 +711,7 @@
 			this._select( 'rel', d.id );
 		} else if ( d.deselectOnClick && !d.moved ) {
 			this._select( null );
+			this._cancelCreateThing();
 		}
 		this._scheduleRender();
 	};
@@ -898,49 +723,71 @@
 		if ( !this.editable ) {
 			return;
 		}
-		var mod = e.ctrlKey || e.metaKey;
-		if ( mod && !e.shiftKey && e.key.toLowerCase() === 'z' ) {
+		if ( ( e.key === 'Delete' || e.key === 'Backspace' ) && this.selection ) {
 			e.preventDefault();
-			this.undo();
-		} else if ( ( mod && e.shiftKey && e.key.toLowerCase() === 'z' ) ||
-			( mod && e.key.toLowerCase() === 'y' ) ) {
-			e.preventDefault();
-			this.redo();
-		} else if ( ( e.key === 'Delete' || e.key === 'Backspace' ) && this.selection ) {
-			e.preventDefault();
-			if ( this.selection.kind === 'thing' ) {
-				this._deleteThing( this.selection.id );
+			var sel = this.selection;
+			if ( sel.id === PENDING ) {
+				this._cancelCreateThing();
+			} else if ( sel.kind === 'thing' ) {
+				this._storeCall( this.store.removeThing( sel.id ) );
 			} else {
-				this._deleteRel( this.selection.id );
+				this._storeCall( this.store.removeEdge( sel.id ) );
 			}
 		} else if ( e.key === 'Escape' ) {
 			this._cancelTagChooser();
+			this._cancelCreateThing();
 			this._select( null );
 		}
 	};
 
-	// ---- tag chooser ------------------------------------------------------
+	// ---- edges ------------------------------------------------------------------
 
-	Graph.prototype._openTagChooser = function ( relId, screenPos ) {
+	Graph.prototype._beginEdge = function ( fromId, toId, screenPos ) {
+		this.pendingEdge = { from: fromId, to: toId };
+		this._scheduleRender();
+		this._openTagChooser( screenPos || this._pendingEdgeScreenMid() );
+	};
+
+	Graph.prototype._pendingEdgeScreenMid = function () {
+		var a = this._anchorOf( this.pendingEdge.from );
+		var b = this._anchorOf( this.pendingEdge.to );
+		return this._w2s( ( a.x + b.x ) / 2, ( a.y + b.y ) / 2 );
+	};
+
+	Graph.prototype._commitEdge = function ( tag ) {
+		var self = this;
+		var pending = this.pendingEdge;
+		this.pendingEdge = null;
 		this._cancelTagChooser();
+		if ( !pending ) {
+			return;
+		}
+		this._storeCall( this.store.addEdge( pending.from, pending.to, tag ) )
+			.then( function ( id ) {
+				self._select( 'rel', id );
+			}, function () {} );
+	};
+
+	Graph.prototype._openTagChooser = function ( screenPos ) {
+		if ( this.tagChooser ) {
+			this.tagChooser.el.remove();
+			this.tagChooser = null;
+		}
 		var self = this;
 		var box = el( 'div', 'inf-card inf-tag-chooser', this.overlay );
-		box.style.left = Math.min( screenPos.x, this.container.clientWidth - 180 ) + 'px';
-		box.style.top = Math.min( screenPos.y, this.container.clientHeight - 160 ) + 'px';
+		box.style.left = clamp( screenPos.x, 0, Math.max( 0, this.container.clientWidth - 190 ) ) + 'px';
+		box.style.top = clamp( screenPos.y, 0, Math.max( 0, this.container.clientHeight - 180 ) ) + 'px';
 		var title = el( 'div', 'inf-card-title', box );
 		title.textContent = 'Relationship tag';
 
-		Object.keys( this.doc.tags ).forEach( function ( tagId ) {
-			var tag = self.doc.tags[ tagId ];
+		this.store.knownTags().forEach( function ( tagName ) {
 			var row = el( 'button', 'inf-tag-option', box );
 			row.type = 'button';
 			var dot = el( 'span', 'inf-tag-dot', row );
-			dot.style.background = tag.color;
-			row.appendChild( document.createTextNode( tag.name || '(unnamed)' ) );
+			dot.style.background = self.store.tagColor( tagName );
+			row.appendChild( document.createTextNode( tagName ) );
 			row.addEventListener( 'click', function () {
-				self._pushUndo();
-				self.doc.relationships[ relId ].tag = tagId;
-				self._finishTagChooser( relId );
+				self._commitEdge( tagName );
 			} );
 		} );
 
@@ -952,12 +799,9 @@
 		add.textContent = '+';
 		function createTag() {
 			var name = input.value.trim();
-			if ( !name ) {
-				return;
+			if ( name ) {
+				self._commitEdge( name );
 			}
-			self._pushUndo();
-			self.doc.relationships[ relId ].tag = self._addTag( name );
-			self._finishTagChooser( relId );
 		}
 		add.addEventListener( 'click', createTag );
 		input.addEventListener( 'keydown', function ( e ) {
@@ -973,32 +817,26 @@
 		skip.type = 'button';
 		skip.textContent = 'no tag for now';
 		skip.addEventListener( 'click', function () {
-			self._finishTagChooser( relId );
+			self._commitEdge( '' );
 		} );
 
-		this.tagChooser = { el: box, relId: relId };
+		this.tagChooser = { el: box };
 		input.focus();
-	};
-
-	Graph.prototype._finishTagChooser = function ( relId ) {
-		if ( this.tagChooser ) {
-			this.tagChooser.el.remove();
-			this.tagChooser = null;
-		}
-		// the chooser's buttons are gone; keep keyboard shortcuts working
-		this.container.focus( { preventScroll: true } );
-		this._markDirty();
-		this._select( 'rel', relId );
 	};
 
 	Graph.prototype._cancelTagChooser = function () {
 		if ( this.tagChooser ) {
 			this.tagChooser.el.remove();
 			this.tagChooser = null;
+			this.container.focus( { preventScroll: true } );
+		}
+		if ( this.pendingEdge ) {
+			this.pendingEdge = null;
+			this._scheduleRender();
 		}
 	};
 
-	// ---- inspector cards --------------------------------------------------
+	// ---- inspector cards -----------------------------------------------------
 
 	Graph.prototype._cardKeyFor = function ( kind, id ) {
 		return kind + ':' + id;
@@ -1100,7 +938,7 @@
 				card.offset.y = base.y + ( ev.clientY - startY ) / z;
 				self._positionCards();
 			}
-			function up( ev ) {
+			function up() {
 				header.removeEventListener( 'pointermove', move );
 				header.removeEventListener( 'pointerup', up );
 			}
@@ -1126,41 +964,40 @@
 		pin.type = 'button';
 		pin.title = obj.pinned ? 'Unpin card' : 'Pin card open';
 		pin.textContent = '📌';
-		if ( !this.editable ) {
+		if ( !this.editable || obj.pending ) {
 			pin.disabled = true;
 		}
 		pin.addEventListener( 'click', function () {
-			self._pushUndo();
 			obj.pinned = !obj.pinned;
 			pin.classList.toggle( 'inf-pinned', obj.pinned );
-			self._markDirty();
+			pin.title = obj.pinned ? 'Unpin card' : 'Pin card open';
+			self._markLayoutDirty();
 		} );
 		var close = el( 'button', 'inf-icon-btn', head );
 		close.type = 'button';
 		close.title = 'Close';
 		close.textContent = '×';
 		close.addEventListener( 'click', function () {
+			if ( card.id === PENDING ) {
+				self._cancelCreateThing();
+			}
 			self._closeCard( self._cardKeyFor( card.kind, card.id ) );
 		} );
 		return head;
 	};
 
-	Graph.prototype._colorRow = function ( parent, current, onPick ) {
-		var row = el( 'div', 'inf-colors', parent );
-		var self = this;
-		PALETTE.forEach( function ( color ) {
-			var swatch = el( 'button', 'inf-swatch' + ( color === current ? ' inf-swatch-active' : '' ), row );
-			swatch.type = 'button';
-			swatch.style.background = color;
-			swatch.disabled = !self.editable;
-			swatch.addEventListener( 'click', function () {
-				onPick( color );
-				Array.prototype.forEach.call( row.children, function ( c ) {
-					c.classList.toggle( 'inf-swatch-active', c === swatch );
-				} );
-			} );
-		} );
-		return row;
+	/** Human label for an endpoint: a page title, or a bracketed edge description. */
+	Graph.prototype._endpointLabel = function ( id ) {
+		var thing = this.doc.things[ id ];
+		if ( thing ) {
+			return thing.name || '?';
+		}
+		var rel = this.doc.relationships[ id ];
+		if ( !rel ) {
+			return '?';
+		}
+		return '[' + ( rel.tag ||
+			this._endpointLabel( rel.from ) + '→' + this._endpointLabel( rel.to ) ) + ']';
 	};
 
 	Graph.prototype._buildThingCard = function ( card ) {
@@ -1169,118 +1006,108 @@
 		if ( !thing ) {
 			return;
 		}
-		this._cardHeader( card, 'Thing', thing );
+		var isPending = !!thing.pending;
+		this._cardHeader( card, isPending ? 'New page' : 'Page', thing );
 		var body = el( 'div', 'inf-card-body', card.el );
 
+		// name IS the page title; committing a change moves the page
 		var name = el( 'input', 'inf-input', body );
-		name.placeholder = 'name';
+		name.placeholder = isPending ? 'page title…' : 'page title';
 		name.value = thing.name;
 		name.readOnly = !this.editable;
-		name.addEventListener( 'focus', function () {
-			card.nameBefore = thing.name;
-		} );
-		name.addEventListener( 'input', function () {
-			thing.name = name.value;
-			self._markDirty();
-		} );
-		name.addEventListener( 'blur', function () {
-			if ( card.nameBefore !== thing.name ) {
-				var current = thing.name;
-				thing.name = card.nameBefore;
-				self._pushUndo();
-				thing.name = current;
+		function commitName() {
+			var value = name.value.trim();
+			if ( isPending ) {
+				self._commitCreateThing( value, card.connectFrom );
+				return;
 			}
-		} );
+			if ( value && value !== thing.name ) {
+				self._storeCall(
+					self.store.renameThing( card.id, value ),
+					'Moved "' + card.id + '" to "' + value + '".'
+				).catch( function () {
+					name.value = thing.name;
+				} );
+			} else {
+				name.value = thing.name;
+			}
+		}
 		name.addEventListener( 'keydown', function ( e ) {
-			if ( e.key === 'Enter' || e.key === 'Escape' ) {
-				name.blur();
-				// return focus to the canvas so Escape/Delete/undo keep working
+			if ( e.key === 'Enter' ) {
+				commitName();
 				self.container.focus( { preventScroll: true } );
-				if ( e.key === 'Escape' ) {
+			} else if ( e.key === 'Escape' ) {
+				if ( isPending ) {
+					self._cancelCreateThing();
+				} else {
+					name.value = thing.name;
+					self.container.focus( { preventScroll: true } );
 					self._select( null );
 				}
 			}
 			e.stopPropagation();
 		} );
+		name.addEventListener( 'blur', function () {
+			commitName();
+		} );
 		card.fields.name = name;
 
-		// type: shared name + color, e.g. "program"
-		var typeSelect = el( 'select', 'inf-input', body );
-		typeSelect.disabled = !this.editable;
-		var noType = el( 'option', null, typeSelect );
-		noType.value = '';
-		noType.textContent = '(no type)';
-		Object.keys( this.doc.types ).forEach( function ( typeId ) {
-			var opt = el( 'option', null, typeSelect );
-			opt.value = typeId;
-			opt.textContent = self.doc.types[ typeId ].name || '(unnamed)';
-		} );
-		var newTypeOpt = el( 'option', null, typeSelect );
-		newTypeOpt.value = '__new__';
-		newTypeOpt.textContent = '+ new type…';
-		typeSelect.value = thing.type || '';
-		typeSelect.addEventListener( 'change', function () {
-			if ( typeSelect.value === '__new__' ) {
-				var typeName = window.prompt( 'Type name (e.g. program):' );
-				if ( typeName && typeName.trim() ) {
-					self._pushUndo();
-					thing.type = self._addType( typeName.trim() );
-					self._markDirty();
+		if ( isPending ) {
+			var pendingHint = el( 'div', 'inf-muted', body );
+			pendingHint.textContent = 'Enter a title to create the page (or reuse an existing one).';
+			return;
+		}
+
+		if ( thing.missing ) {
+			var missing = el( 'div', 'inf-muted', body );
+			missing.textContent = 'This page does not exist yet.';
+		}
+
+		var openRow = el( 'div', 'inf-row', body );
+		var open = el( 'a', 'inf-link-go', openRow );
+		open.textContent = '↗ open page';
+		var href = this.resolveHref( card.id );
+		if ( href ) {
+			open.href = href;
+		}
+
+		// type = category
+		if ( this.editable ) {
+			var typeSelect = el( 'select', 'inf-input', body );
+			var noType = el( 'option', null, typeSelect );
+			noType.value = '';
+			noType.textContent = '(no type)';
+			var known = this.store.knownTypes();
+			if ( thing.type && known.indexOf( thing.type ) === -1 ) {
+				known = known.concat( [ thing.type ] );
+			}
+			known.forEach( function ( typeName ) {
+				var opt = el( 'option', null, typeSelect );
+				opt.value = typeName;
+				opt.textContent = typeName;
+			} );
+			var newTypeOpt = el( 'option', null, typeSelect );
+			newTypeOpt.value = '__new__';
+			newTypeOpt.textContent = '+ new type…';
+			typeSelect.value = thing.type || '';
+			typeSelect.addEventListener( 'change', function () {
+				var value = typeSelect.value;
+				if ( value === '__new__' ) {
+					value = window.prompt( 'Type name (a category, e.g. Programs):' );
+					if ( !value || !value.trim() ) {
+						typeSelect.value = thing.type || '';
+						return;
+					}
+					value = value.trim();
 				}
-			} else {
-				self._pushUndo();
-				thing.type = typeSelect.value || null;
-				self._markDirty();
-			}
-			self._rebuildCard( card );
-		} );
-
-		// color: a type's color is shared by every thing of that type
-		var type = thing.type ? this.doc.types[ thing.type ] : null;
-		if ( type ) {
-			var typeLabel = el( 'div', 'inf-section-title', body );
-			typeLabel.textContent = 'Type color (all "' + ( type.name || '?' ) + '")';
-			this._colorRow( body, type.color, function ( color ) {
-				self._pushUndo();
-				type.color = color;
-				self._markDirty();
+				self._storeCall( self.store.setType( card.id, value || null ) );
 			} );
-		} else {
-			this._colorRow( body, thing.color, function ( color ) {
-				self._pushUndo();
-				thing.color = color;
-				self._markDirty();
-			} );
+		} else if ( thing.type ) {
+			var typeRow = el( 'div', 'inf-muted', body );
+			typeRow.textContent = 'Type: ' + thing.type;
 		}
 
-		var linkRow = el( 'div', 'inf-row', body );
-		var link = el( 'input', 'inf-input', linkRow );
-		link.placeholder = 'wiki page link…';
-		link.value = thing.link;
-		link.readOnly = !this.editable;
-		link.addEventListener( 'change', function () {
-			self._pushUndo();
-			thing.link = link.value.trim();
-			self._markDirty();
-			// refresh dependent widgets (open-link arrow, page editor)
-			self._rebuildCard( card );
-		} );
-		link.addEventListener( 'keydown', function ( e ) {
-			e.stopPropagation();
-		} );
-		var go = el( 'a', 'inf-link-go', linkRow );
-		go.textContent = '↗';
-		go.title = 'Open linked page';
-		function updateGo() {
-			var href = thing.link ? self.resolveHref( thing.link ) : null;
-			go.style.display = href ? '' : 'none';
-			if ( href ) {
-				go.href = href;
-			}
-		}
-		updateGo();
-
-		// every relationship this thing takes part in
+		// every relationship this page takes part in
 		var relIds = Object.keys( this.doc.relationships ).filter( function ( rid ) {
 			var rel = self.doc.relationships[ rid ];
 			return rel.from === card.id || rel.to === card.id;
@@ -1293,11 +1120,10 @@
 				var rel = self.doc.relationships[ rid ];
 				var outgoing = rel.from === card.id;
 				var other = outgoing ? rel.to : rel.from;
-				var tag = rel.tag ? self.doc.tags[ rel.tag ] : null;
 				var row = el( 'button', 'inf-rel-item', relList );
 				row.type = 'button';
 				row.textContent = ( outgoing ? '→ ' : '← ' ) +
-					( tag && tag.name ? tag.name + ' ' : '' ) +
+					( rel.tag ? rel.tag + ' ' : '' ) +
 					( rel.inferred ? '∴ ' : '' ) +
 					self._endpointLabel( other );
 				row.addEventListener( 'click', function () {
@@ -1307,35 +1133,31 @@
 		}
 
 		if ( this.pageApi && this.editable ) {
-			this._buildPageEditor( body, thing );
+			this._buildPageEditor( body, card.id );
 		}
 
 		if ( this.editable ) {
 			var del = el( 'button', 'inf-btn inf-btn-danger', body );
 			del.type = 'button';
-			del.textContent = 'Delete thing';
+			del.textContent = 'Remove from view';
+			del.title = 'Removes the page from this diagram; the page itself is kept.';
 			del.addEventListener( 'click', function () {
-				self._deleteThing( card.id );
+				self._storeCall( self.store.removeThing( card.id ) );
 			} );
 		}
 	};
 
 	/**
-	 * Edit the linked wiki page's full source without leaving the canvas.
-	 * Loads through pageApi.load and saves through pageApi.save; creates
-	 * the page if it doesn't exist yet.
+	 * Edit the page's full wikitext without leaving the canvas. Loads
+	 * through pageApi.load and saves through pageApi.save.
 	 */
-	Graph.prototype._buildPageEditor = function ( body, thing ) {
+	Graph.prototype._buildPageEditor = function ( body, title ) {
 		var self = this;
 		var section = el( 'div', 'inf-page-editor', body );
 		var toggle = el( 'button', 'inf-btn', section );
 		toggle.type = 'button';
+		toggle.textContent = 'Edit page source';
 		var editorEl = null;
-
-		toggle.textContent = 'Edit linked page';
-		toggle.disabled = !thing.link;
-		toggle.title = thing.link ?
-			'Edit "' + thing.link + '"' : 'Set a wiki page link first';
 
 		toggle.addEventListener( 'click', function () {
 			if ( editorEl ) {
@@ -1343,12 +1165,9 @@
 				editorEl = null;
 				return;
 			}
-			if ( !thing.link ) {
-				return;
-			}
 			editorEl = el( 'div', 'inf-page-editor', section );
 			var status = el( 'div', 'inf-muted', editorEl );
-			status.textContent = 'Loading ' + thing.link + '…';
+			status.textContent = 'Loading ' + title + '…';
 			var textarea = el( 'textarea', 'inf-input', editorEl );
 			textarea.disabled = true;
 			var save = el( 'button', 'inf-btn inf-btn-primary', editorEl );
@@ -1356,15 +1175,15 @@
 			save.textContent = 'Save page';
 			save.disabled = true;
 
-			self.pageApi.load( thing.link ).then( function ( result ) {
+			self.pageApi.load( title ).then( function ( result ) {
 				textarea.value = result.text || '';
 				textarea.disabled = false;
 				save.disabled = false;
 				status.textContent = result.exists ?
-					'Editing "' + thing.link + '"' :
-					'"' + thing.link + '" does not exist yet — saving will create it.';
+					'Editing "' + title + '"' :
+					'"' + title + '" does not exist yet — saving will create it.';
 			}, function () {
-				status.textContent = 'Could not load "' + thing.link + '".';
+				status.textContent = 'Could not load "' + title + '".';
 			} );
 
 			textarea.addEventListener( 'keydown', function ( e ) {
@@ -1373,35 +1192,19 @@
 			save.addEventListener( 'click', function () {
 				save.disabled = true;
 				save.textContent = 'Saving…';
-				self.pageApi.save( thing.link, textarea.value ).then( function () {
+				self.pageApi.save( title, textarea.value ).then( function () {
 					save.disabled = false;
 					save.textContent = 'Save page';
-					status.textContent = 'Saved "' + thing.link + '".';
-					self.notify( 'Saved page "' + thing.link + '".', false );
+					status.textContent = 'Saved "' + title + '".';
+					self.notify( 'Saved page "' + title + '".', false );
 				}, function ( err ) {
 					save.disabled = false;
 					save.textContent = 'Save page';
 					status.textContent = 'Saving failed.';
-					self.notify( 'Saving "' + thing.link + '" failed: ' + err, true );
+					self.notify( 'Saving "' + title + '" failed: ' + err, true );
 				} );
 			} );
 		} );
-	};
-
-	/** Human label for an endpoint: a thing's name, or a bracketed edge description. */
-	Graph.prototype._endpointLabel = function ( id ) {
-		var thing = this.doc.things[ id ];
-		if ( thing ) {
-			return thing.name || '?';
-		}
-		var rel = this.doc.relationships[ id ];
-		if ( !rel ) {
-			return '?';
-		}
-		var tag = rel.tag ? this.doc.tags[ rel.tag ] : null;
-		return '[' + ( tag && tag.name ?
-			tag.name :
-			this._endpointLabel( rel.from ) + '→' + this._endpointLabel( rel.to ) ) + ']';
 	};
 
 	Graph.prototype._buildRelCard = function ( card ) {
@@ -1414,62 +1217,42 @@
 			this._endpointLabel( rel.from ) + ' → ' + this._endpointLabel( rel.to ), rel );
 		var body = el( 'div', 'inf-card-body', card.el );
 
+		var stored = el( 'div', 'inf-muted', body );
+		stored.textContent = 'Stored on "' + card.id.split( '#' )[ 0 ] + '"';
+
 		// tag picker
-		var tagRow = el( 'div', 'inf-row', body );
-		var select = el( 'select', 'inf-input', tagRow );
+		var select = el( 'select', 'inf-input', body );
 		select.disabled = !this.editable;
 		var none = el( 'option', null, select );
 		none.value = '';
 		none.textContent = '(no tag)';
-		Object.keys( this.doc.tags ).forEach( function ( tagId ) {
+		var tags = this.store.knownTags();
+		if ( rel.tag && tags.indexOf( rel.tag ) === -1 ) {
+			tags = tags.concat( [ rel.tag ] );
+		}
+		tags.forEach( function ( tagName ) {
 			var opt = el( 'option', null, select );
-			opt.value = tagId;
-			opt.textContent = self.doc.tags[ tagId ].name || '(unnamed)';
+			opt.value = tagName;
+			opt.textContent = tagName;
 		} );
 		var createOpt = el( 'option', null, select );
 		createOpt.value = '__new__';
 		createOpt.textContent = '+ new tag…';
 		select.value = rel.tag || '';
 		select.addEventListener( 'change', function () {
-			if ( select.value === '__new__' ) {
-				var name = window.prompt( 'Tag name:' );
-				if ( name && name.trim() ) {
-					self._pushUndo();
-					rel.tag = self._addTag( name.trim() );
-					self._markDirty();
+			var value = select.value;
+			if ( value === '__new__' ) {
+				value = window.prompt( 'Tag name:' );
+				if ( !value || !value.trim() ) {
+					select.value = rel.tag || '';
+					return;
 				}
-				self._rebuildCard( card );
-				return;
+				value = value.trim();
 			}
-			self._pushUndo();
-			rel.tag = select.value || null;
-			self._markDirty();
-			self._rebuildCard( card );
+			self._storeCall( self.store.updateEdge( card.id, { tag: value } ) );
 		} );
 
-		// tag rename + color, edits apply to every edge using the tag
-		if ( rel.tag && this.doc.tags[ rel.tag ] ) {
-			var tag = this.doc.tags[ rel.tag ];
-			var rename = el( 'input', 'inf-input', body );
-			rename.value = tag.name;
-			rename.placeholder = 'tag name';
-			rename.readOnly = !this.editable;
-			rename.addEventListener( 'change', function () {
-				self._pushUndo();
-				tag.name = rename.value.trim();
-				self._markDirty();
-			} );
-			rename.addEventListener( 'keydown', function ( e ) {
-				e.stopPropagation();
-			} );
-			this._colorRow( body, tag.color, function ( color ) {
-				self._pushUndo();
-				tag.color = color;
-				self._markDirty();
-			} );
-		}
-
-		// inferred: this connection is deduced, not directly observed
+		// inferred: deduced, not directly observed
 		var infLabel = el( 'label', 'inf-check', body );
 		var infBox = el( 'input', null, infLabel );
 		infBox.type = 'checkbox';
@@ -1477,27 +1260,34 @@
 		infBox.disabled = !this.editable;
 		infLabel.appendChild( document.createTextNode( '∴ inferred (not directly observed)' ) );
 		infBox.addEventListener( 'change', function () {
-			self._pushUndo();
-			rel.inferred = infBox.checked;
-			self._markDirty();
+			self._storeCall( self.store.updateEdge( card.id, { inferred: infBox.checked } ) );
 		} );
 
 		// evidence
 		var evTitle = el( 'div', 'inf-section-title', body );
 		evTitle.textContent = 'Evidence';
 		var evList = el( 'div', 'inf-evidence', body );
+		var evidence = rel.evidence.map( function ( ev ) {
+			return { source: ev.source, snippet: ev.snippet };
+		} );
+		function pushEvidence() {
+			self._storeCall( self.store.updateEdge( card.id, {
+				evidence: evidence.filter( function ( ev ) {
+					return ev.source || ev.snippet;
+				} )
+			} ) );
+		}
 		function renderEvidence() {
 			evList.textContent = '';
-			rel.evidence.forEach( function ( ev, i ) {
+			evidence.forEach( function ( ev, i ) {
 				var row = el( 'div', 'inf-evidence-item', evList );
 				var source = el( 'input', 'inf-input', row );
 				source.placeholder = 'source (url or page)';
 				source.value = ev.source;
 				source.readOnly = !self.editable;
 				source.addEventListener( 'change', function () {
-					self._pushUndo();
 					ev.source = source.value;
-					self._markDirty();
+					pushEvidence();
 				} );
 				source.addEventListener( 'keydown', function ( e ) {
 					e.stopPropagation();
@@ -1508,9 +1298,8 @@
 				snippet.value = ev.snippet;
 				snippet.readOnly = !self.editable;
 				snippet.addEventListener( 'change', function () {
-					self._pushUndo();
 					ev.snippet = snippet.value;
-					self._markDirty();
+					pushEvidence();
 				} );
 				snippet.addEventListener( 'keydown', function ( e ) {
 					e.stopPropagation();
@@ -1521,14 +1310,13 @@
 					rm.title = 'Remove evidence';
 					rm.textContent = '×';
 					rm.addEventListener( 'click', function () {
-						self._pushUndo();
-						rel.evidence.splice( i, 1 );
-						self._markDirty();
+						evidence.splice( i, 1 );
 						renderEvidence();
+						pushEvidence();
 					} );
 				}
 			} );
-			if ( !rel.evidence.length && !self.editable ) {
+			if ( !evidence.length && !self.editable ) {
 				var empty = el( 'div', 'inf-muted', evList );
 				empty.textContent = 'No evidence recorded yet.';
 			}
@@ -1539,17 +1327,16 @@
 			add.type = 'button';
 			add.textContent = '+ add evidence';
 			add.addEventListener( 'click', function () {
-				self._pushUndo();
-				rel.evidence.push( { source: '', snippet: '' } );
-				self._markDirty();
+				evidence.push( { source: '', snippet: '' } );
 				renderEvidence();
 			} );
 
 			var del = el( 'button', 'inf-btn inf-btn-danger', body );
 			del.type = 'button';
 			del.textContent = 'Delete relationship';
+			del.title = 'Removes the {{#inference:…}} call from the source page.';
 			del.addEventListener( 'click', function () {
-				self._deleteRel( card.id );
+				self._storeCall( self.store.removeEdge( card.id ) );
 			} );
 		}
 	};
@@ -1580,7 +1367,7 @@
 		} );
 	};
 
-	// ---- rendering --------------------------------------------------------
+	// ---- rendering --------------------------------------------------------------
 
 	Graph.prototype._scheduleRender = function () {
 		if ( this._renderQueued ) {
@@ -1605,7 +1392,6 @@
 		ctx.fillStyle = this._theme().bg;
 		ctx.fillRect( 0, 0, this.canvas.width, this.canvas.height );
 
-		// world transform
 		ctx.setTransform(
 			dpr * v.zoom, 0, 0, dpr * v.zoom,
 			dpr * ( w / 2 - v.x * v.zoom ),
@@ -1622,6 +1408,7 @@
 		this._drawRelationships( ctx, v.zoom );
 		this._drawThings( ctx, v.zoom );
 		this._drawGhost( ctx, v.zoom );
+		this._drawPendingEdge( ctx );
 		this._positionCards();
 	};
 
@@ -1646,6 +1433,18 @@
 		} );
 	};
 
+	/** Is this relationship itself the endpoint of another relationship? */
+	Graph.prototype._isRelEndpoint = function ( id ) {
+		var rels = this.doc.relationships;
+		var ids = Object.keys( rels );
+		for ( var i = 0; i < ids.length; i++ ) {
+			if ( rels[ ids[ i ] ].from === id || rels[ ids[ i ] ].to === id ) {
+				return true;
+			}
+		}
+		return false;
+	};
+
 	Graph.prototype._drawRelationships = function ( ctx, zoom ) {
 		var self = this;
 		var theme = this._theme();
@@ -1654,12 +1453,10 @@
 			var a = self._anchorOf( rel.from );
 			var b = self._anchorOf( rel.to );
 			var h = self._relHandle( rel );
-			var tag = rel.tag ? self.doc.tags[ rel.tag ] : null;
-			var color = tag ? tag.color : '#8d8d8d';
+			var color = rel.tag ? rel.tagColor : '#8d8d8d';
 			var selected = self.selection && self.selection.kind === 'rel' && self.selection.id === id;
 			var hovered = self.hover && self.hover.kind === 'rel' && self.hover.id === id;
 
-			// trim endpoints to the anchor rims (node circle or label pill)
 			var start = trimToRim( a, h.x, h.y );
 			var end = trimToRim( b, h.x, h.y );
 
@@ -1687,7 +1484,7 @@
 
 			// label pill at the curve midpoint (also the anchor for
 			// relationships that point at this relationship)
-			var label = tag ? tag.name : '';
+			var label = rel.tag || '';
 			if ( rel.inferred ) {
 				label = '∴' + ( label ? ' ' + label : '' );
 			}
@@ -1740,18 +1537,6 @@
 		}
 	};
 
-	/** Is this relationship itself the endpoint of another relationship? */
-	Graph.prototype._isRelEndpoint = function ( id ) {
-		var rels = this.doc.relationships;
-		var ids = Object.keys( rels );
-		for ( var i = 0; i < ids.length; i++ ) {
-			if ( rels[ ids[ i ] ].from === id || rels[ ids[ i ] ].to === id ) {
-				return true;
-			}
-		}
-		return false;
-	};
-
 	Graph.prototype._drawThings = function ( ctx, zoom ) {
 		var self = this;
 		var theme = this._theme();
@@ -1766,9 +1551,13 @@
 			ctx.beginPath();
 			ctx.arc( t.x, t.y, THING_RADIUS, 0, Math.PI * 2 );
 			ctx.fill();
-			ctx.strokeStyle = self._thingColor( t );
+			ctx.strokeStyle = t.missing ? theme.danger : t.color;
 			ctx.lineWidth = selected || hovered ? 3 : 1.5;
+			if ( t.missing || t.pending ) {
+				ctx.setLineDash( [ 5, 4 ] );
+			}
 			ctx.stroke();
+			ctx.setLineDash( [] );
 			if ( selected ) {
 				ctx.strokeStyle = 'rgba(' + theme.ghostRgb + ',0.35)';
 				ctx.lineWidth = 1;
@@ -1777,8 +1566,8 @@
 				ctx.stroke();
 			}
 
-			// name, wrapped to the circle
-			ctx.fillStyle = theme.text;
+			// title, wrapped to the circle; red-link color for missing pages
+			ctx.fillStyle = t.missing ? theme.danger : theme.text;
 			ctx.font = '12px sans-serif';
 			var lines = wrapText( ctx, t.name || '…', 54, 3 );
 			var lh = 13;
@@ -1787,17 +1576,10 @@
 			} );
 
 			// type caption under the circle
-			if ( t.type && self.doc.types[ t.type ] ) {
+			if ( t.type ) {
 				ctx.font = 'italic 10px sans-serif';
 				ctx.fillStyle = theme.muted;
-				ctx.fillText( self.doc.types[ t.type ].name, t.x, t.y + THING_RADIUS + 11 );
-			}
-
-			// link indicator
-			if ( t.link ) {
-				ctx.font = '11px sans-serif';
-				ctx.fillStyle = theme.link;
-				ctx.fillText( '↗', t.x + THING_RADIUS * 0.72, t.y - THING_RADIUS * 0.72 );
+				ctx.fillText( t.type, t.x, t.y + THING_RADIUS + 11 );
 			}
 		} );
 	};
@@ -1826,6 +1608,23 @@
 		}
 	};
 
+	Graph.prototype._drawPendingEdge = function ( ctx ) {
+		if ( !this.pendingEdge ) {
+			return;
+		}
+		var a = this._anchorOf( this.pendingEdge.from );
+		var b = this._anchorOf( this.pendingEdge.to );
+		var ghostRgb = this._theme().ghostRgb;
+		ctx.strokeStyle = 'rgba(' + ghostRgb + ',0.55)';
+		ctx.lineWidth = 1.5;
+		ctx.setLineDash( [ 6, 5 ] );
+		ctx.beginPath();
+		ctx.moveTo( a.x, a.y );
+		ctx.lineTo( b.x, b.y );
+		ctx.stroke();
+		ctx.setLineDash( [] );
+	};
+
 	function wrapText( ctx, text, maxWidth, maxLines ) {
 		var words = String( text ).split( /\s+/ ).filter( Boolean );
 		if ( !words.length ) {
@@ -1845,9 +1644,8 @@
 				}
 			}
 		}
-		var rest = words.slice( 0 ).join( ' ' );
+		var rest = words.join( ' ' );
 		lines.push( line );
-		// ellipsize if we truncated
 		var joined = lines.join( ' ' );
 		if ( joined.length < rest.length ) {
 			var last = lines[ lines.length - 1 ];
@@ -1869,7 +1667,6 @@
 		ctx.closePath();
 	}
 
-	Graph.normalizeDoc = normalizeDoc;
-	Graph.PALETTE = PALETTE;
+	Graph.PENDING = PENDING;
 	return Graph;
 } ) );

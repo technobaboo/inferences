@@ -55,7 +55,7 @@ class DiagramContentHandler extends JsonContentHandler {
 		$output->addModules( [ 'ext.inferences.diagram' ] );
 		$output->setRawText( Html::element( 'div', [
 			'class' => 'ext-inferences-diagram',
-			'data-inferences-doc' => $content->getText(),
+			'data-inferences-view' => $content->getText(),
 		] ) );
 	}
 }

@@ -5,79 +5,363 @@
 <title>Inferences — canvas dev harness</title>
 <link rel="stylesheet" href="../resources/ext.inferences.diagram/styles.css">
 <style>
-	html, body { margin: 0; height: 100%; background: #101013; font-family: sans-serif; }
+	html, body { margin: 0; height: 100%; background: #eee; font-family: sans-serif; }
+	@media ( prefers-color-scheme: dark ) { html, body { background: #101013; } }
 	#stage { position: absolute; inset: 0; }
 </style>
 </head>
 <body>
 <div id="stage" class="ext-inferences-diagram"></div>
+<script src="../resources/ext.inferences.diagram/InferenceText.js"></script>
 <script src="../resources/ext.inferences.diagram/Graph.js"></script>
 <script>
-	// Standalone harness: same widget the wiki uses, minus MediaWiki.
-	// Saves to localStorage so you can iterate on the editor itself with
-	// nothing but a browser. Append ?fresh to reset.
-	var SAMPLE = {
-		version: 1,
+	// Standalone harness: the same canvas the wiki uses, backed by a
+	// MockStore over an in-memory "wiki" of {title: wikitext}. It shares
+	// InferencesText with the real WikiStore, so the storage semantics
+	// (inference calls, categories) are exercised for real. State lives
+	// in localStorage; append ?fresh to reset.
+	var Text = window.InferencesText;
+
+	var SAMPLE_WIKI = {
+		'Wayland client': '{{#inference:id=1|to=Compositor|tag=sends frames to|evidence1=https://wayland.freedesktop.org/docs/html/|snippet1=wl_surface.commit atomically applies pending state.}}\n[[Category:Programs]]\n',
+		'Compositor': "A ''compositor'' combines surfaces.\n{{#inference:id=1|to=GPU driver|tag=depends on|inferred=yes}}\n[[Category:Programs]]\n",
+		'GPU driver': '',
+		// meta-edge: this page's inference #1 points at ANOTHER PAGE'S
+		// inference ("Wayland client#1"), i.e. thing -> relationship
+		'Unix domain socket': '{{#inference:id=1|to=Wayland client#1|tag=transport for}}\n[[Category:IPC primitives]]\n',
+		'Category:Programs': '{{#inferencetype:color=#46a758}}\n',
+		'Category:IPC primitives': '{{#inferencetype:color=#8e4ec6}}\n'
+	};
+	var SAMPLE_VIEW = {
+		version: 2,
+		category: '',
+		pages: [ 'Wayland client', 'Compositor', 'GPU driver', 'Unix domain socket' ],
 		view: { x: 0, y: 0, zoom: 1 },
-		tags: {
-			'1': { name: 'sends frames to', color: '#00a2c7' },
-			'2': { name: 'depends on', color: '#f76b15' },
-			'8': { name: 'transport for', color: '#8e4ec6' }
-		},
-		types: {
-			'11': { name: 'program', color: '#46a758' },
-			'12': { name: 'ipc primitive', color: '#8e4ec6' }
-		},
 		things: {
-			'3': { name: 'Wayland client', color: '#8d8d8d', type: '11', x: -180, y: -60, pinned: false, link: 'Wayland' },
-			'4': { name: 'Compositor', color: '#8d8d8d', type: '11', x: 60, y: 20, pinned: false, link: 'Compositor' },
-			'5': { name: 'GPU driver', color: '#e5484d', type: null, x: 240, y: -140, pinned: false, link: '' },
-			'9': { name: 'Unix domain socket', color: '#8d8d8d', type: '12', x: -320, y: 160, pinned: false, link: '' }
+			'Wayland client': { x: -180, y: -60, pinned: false },
+			'Compositor': { x: 60, y: 20, pinned: false },
+			'GPU driver': { x: 240, y: -140, pinned: false },
+			'Unix domain socket': { x: -320, y: 160, pinned: false }
 		},
-		relationships: {
-			'6': {
-				from: '3', to: '4', tag: '1', hx: -60, hy: 60, hset: true, pinned: false,
-				evidence: [ { source: 'https://wayland.freedesktop.org/docs/html/', snippet: 'wl_surface.commit atomically applies pending state.' } ]
-			},
-			// inferred: deduced from behavior, not directly observed
-			'7': { from: '4', to: '5', tag: '2', hx: 150, hy: -60, hset: false, inferred: true, pinned: false, evidence: [] },
-			// a relationship *about* a relationship: the socket is the
-			// transport for the client -> compositor edge
-			'10': { from: '9', to: '6', tag: '8', hx: 0, hy: 0, hset: false, pinned: false, evidence: [] }
-		},
-		nextId: 13
+		edges: {}
 	};
 
-	var stored = null;
-	if ( window.location.search.indexOf( 'fresh' ) === -1 ) {
-		try { stored = JSON.parse( localStorage.getItem( 'inferences-dev-doc' ) ); } catch ( e ) {}
+	function loadState() {
+		if ( window.location.search.indexOf( 'fresh' ) !== -1 ) {
+			return null;
+		}
+		try {
+			return JSON.parse( localStorage.getItem( 'inferences-dev-state' ) );
+		} catch ( e ) {
+			return null;
+		}
+	}
+	var state = loadState() || { wiki: SAMPLE_WIKI, view: SAMPLE_VIEW };
+	function persist() {
+		localStorage.setItem( 'inferences-dev-state', JSON.stringify( state ) );
 	}
 
-	var graph = new InferencesGraph( document.getElementById( 'stage' ), {
-		doc: stored || SAMPLE,
-		editable: true,
-		resolveHref: function ( title ) { return 'https://en.wikipedia.org/wiki/' + encodeURIComponent( title ); },
-		navigate: function ( title ) { console.log( 'navigate:', title ); },
-		notify: function ( msg, isError ) { console.log( ( isError ? 'ERROR: ' : '' ) + msg ); },
-		// mock wiki-page storage so the card's page editor is testable
-		pageApi: {
-			load: function ( title ) {
-				var text = localStorage.getItem( 'inferences-dev-page:' + title );
-				return Promise.resolve( { exists: text !== null, text: text || '' } );
-			},
-			save: function ( title, text ) {
-				localStorage.setItem( 'inferences-dev-page:' + title, text );
-				return Promise.resolve();
+	// ---- MockStore: same interface as WikiStore, sync + localStorage ----
+	function MockStore( wiki, viewDoc ) {
+		this.wiki = wiki;
+		this.viewDoc = viewDoc;
+		this.graph = null;
+		this.doc = null;
+		this.tags = [];
+	}
+	MockStore.prototype.attach = function ( g ) { this.graph = g; };
+	MockStore.prototype.knownTags = function () { return this.tags.slice().sort(); };
+	MockStore.prototype.tagColor = function ( name ) { return Text.hashColor( name ); };
+	MockStore.prototype.typeColorOf = function ( name ) {
+		var text = this.wiki[ 'Category:' + name ];
+		if ( text === undefined ) { return null; }
+		var m = /color=(#[0-9a-fA-F]{6})/.exec( text );
+		return m ? m[ 1 ] : Text.hashColor( name );
+	};
+	MockStore.prototype.knownTypes = function () {
+		var self = this;
+		return Object.keys( this.wiki ).filter( function ( t ) {
+			return t.indexOf( 'Category:' ) === 0 && /#inferencetype/.test( self.wiki[ t ] );
+		} ).map( function ( t ) { return t.slice( 9 ); } ).sort();
+	};
+	MockStore.prototype._typeOf = function ( title ) {
+		var cats = Text.getCategories( this.wiki[ title ] || '' );
+		for ( var i = 0; i < cats.length; i++ ) {
+			if ( this.typeColorOf( cats[ i ] ) ) { return cats[ i ]; }
+		}
+		return null;
+	};
+	MockStore.prototype.load = function () {
+		var self = this;
+		var members = {};
+		this.viewDoc.pages.forEach( function ( t ) { members[ t ] = true; } );
+		Object.keys( this.viewDoc.things ).forEach( function ( t ) { members[ t ] = true; } );
+		var doc = { view: this.viewDoc.view, things: {}, relationships: {} };
+		var unplaced = 0;
+		Object.keys( members ).sort().forEach( function ( title, i ) {
+			var layout = self.viewDoc.things[ title ];
+			var angle = unplaced * 2.4, r = 110 * Math.sqrt( unplaced + 1 );
+			var type = self._typeOf( title );
+			doc.things[ title ] = {
+				name: title,
+				color: type ? self.typeColorOf( type ) : '#8d8d8d',
+				type: type,
+				x: layout ? layout.x : Math.cos( angle ) * r,
+				y: layout ? layout.y : Math.sin( angle ) * r,
+				pinned: !!( layout && layout.pinned ),
+				missing: !( title in self.wiki )
+			};
+			if ( !layout ) { unplaced++; }
+		} );
+		var candidates = {}, tagSet = {};
+		Object.keys( members ).forEach( function ( title ) {
+			Text.parse( self.wiki[ title ] || '' ).forEach( function ( entry ) {
+				var resolve = function ( ref ) {
+					return !ref ? title : ( ref[ 0 ] === '#' ? title + ref : ref );
+				};
+				candidates[ title + '#' + entry.id ] = {
+					from: resolve( entry.from ), to: resolve( entry.to ),
+					tag: entry.tag, inferred: entry.inferred, evidence: entry.evidence
+				};
+				if ( entry.tag ) { tagSet[ entry.tag ] = true; }
+			} );
+		} );
+		var kept = {}, changed = true;
+		while ( changed ) {
+			changed = false;
+			Object.keys( candidates ).forEach( function ( id ) {
+				if ( kept[ id ] ) { return; }
+				var c = candidates[ id ];
+				if ( c.from !== c.to &&
+					( doc.things[ c.from ] || kept[ c.from ] ) &&
+					( doc.things[ c.to ] || kept[ c.to ] ) ) {
+					kept[ id ] = true;
+					changed = true;
+				}
+			} );
+		}
+		Object.keys( kept ).forEach( function ( id ) {
+			var c = candidates[ id ];
+			var layout = self.viewDoc.edges[ id ] || {};
+			doc.relationships[ id ] = {
+				from: c.from, to: c.to, tag: c.tag,
+				tagColor: Text.hashColor( c.tag ),
+				inferred: c.inferred, evidence: c.evidence,
+				hx: layout.hx || 0, hy: layout.hy || 0,
+				hset: !!layout.hset, pinned: !!layout.pinned
+			};
+		} );
+		this.tags = Object.keys( tagSet );
+		this.doc = doc;
+		return Promise.resolve( doc );
+	};
+	MockStore.prototype.saveLayout = function () {
+		var self = this;
+		this.viewDoc.view = this.doc.view;
+		this.viewDoc.things = {};
+		Object.keys( this.doc.things ).forEach( function ( t ) {
+			if ( t[ 0 ] === ' ' ) { return; }
+			var th = self.doc.things[ t ];
+			self.viewDoc.things[ t ] = { x: th.x, y: th.y, pinned: th.pinned };
+		} );
+		this.viewDoc.edges = {};
+		Object.keys( this.doc.relationships ).forEach( function ( id ) {
+			var rel = self.doc.relationships[ id ];
+			if ( rel.hset || rel.pinned ) {
+				self.viewDoc.edges[ id ] = { hx: rel.hx, hy: rel.hy, hset: rel.hset, pinned: rel.pinned };
 			}
-		},
-		onDirtyChange: function ( dirty ) { saveBtn.disabled = !dirty; }
+		} );
+		persist();
+		return Promise.resolve();
+	};
+	MockStore.prototype.createThing = function ( title, pos ) {
+		title = title.trim();
+		if ( !( title in this.wiki ) ) { this.wiki[ title ] = ''; }
+		if ( this.viewDoc.pages.indexOf( title ) === -1 ) { this.viewDoc.pages.push( title ); }
+		this.viewDoc.things[ title ] = { x: pos.x, y: pos.y, pinned: false };
+		this.doc.things[ title ] = {
+			name: title, color: '#8d8d8d', type: this._typeOf( title ),
+			x: pos.x, y: pos.y, pinned: false, missing: false
+		};
+		persist();
+		return Promise.resolve( title );
+	};
+	MockStore.prototype.renameThing = function ( oldT, newT ) {
+		var self = this;
+		newT = newT.trim();
+		this.wiki[ newT ] = this.wiki[ oldT ] || '';
+		delete this.wiki[ oldT ];
+		Object.keys( this.wiki ).forEach( function ( t ) {
+			var rewritten = Text.renameReferences( self.wiki[ t ], oldT, newT );
+			if ( rewritten !== null ) { self.wiki[ t ] = rewritten; }
+		} );
+		var i = this.viewDoc.pages.indexOf( oldT );
+		if ( i !== -1 ) { this.viewDoc.pages[ i ] = newT; }
+		this.viewDoc.things[ newT ] = this.viewDoc.things[ oldT ];
+		delete this.viewDoc.things[ oldT ];
+		this.doc.things[ newT ] = this.doc.things[ oldT ];
+		this.doc.things[ newT ].name = newT;
+		delete this.doc.things[ oldT ];
+		if ( this.graph ) { this.graph.remapId( 'thing', oldT, newT ); }
+		var ren = function ( ref ) {
+			if ( ref === oldT ) { return newT; }
+			if ( ref.indexOf( oldT + '#' ) === 0 ) { return newT + ref.slice( oldT.length ); }
+			return ref;
+		};
+		Object.keys( this.doc.relationships ).forEach( function ( id ) {
+			var rel = self.doc.relationships[ id ];
+			rel.from = ren( rel.from );
+			rel.to = ren( rel.to );
+			var nid = ren( id );
+			if ( nid !== id ) {
+				self.doc.relationships[ nid ] = rel;
+				delete self.doc.relationships[ id ];
+				if ( self.graph ) { self.graph.remapId( 'rel', id, nid ); }
+			}
+		} );
+		persist();
+		return Promise.resolve( newT );
+	};
+	MockStore.prototype.removeThing = function ( title ) {
+		var self = this;
+		var i = this.viewDoc.pages.indexOf( title );
+		if ( i !== -1 ) { this.viewDoc.pages.splice( i, 1 ); }
+		delete this.viewDoc.things[ title ];
+		delete this.doc.things[ title ];
+		var dead = {}; dead[ title ] = true;
+		var changed = true;
+		while ( changed ) {
+			changed = false;
+			Object.keys( this.doc.relationships ).forEach( function ( id ) {
+				var rel = self.doc.relationships[ id ];
+				if ( dead[ rel.from ] || dead[ rel.to ] ) {
+					delete self.doc.relationships[ id ];
+					dead[ id ] = true;
+					changed = true;
+				}
+			} );
+		}
+		persist();
+		return Promise.resolve();
+	};
+	MockStore.prototype._refFor = function ( id, page ) {
+		var h = id.indexOf( '#' );
+		if ( h === -1 ) { return id === page ? '' : id; }
+		return id.slice( 0, h ) === page ? id.slice( h ) : id;
+	};
+	MockStore.prototype.addEdge = function ( fromId, toId, tag ) {
+		var page = fromId.split( '#' )[ 0 ];
+		var text = this.wiki[ page ];
+		if ( text === undefined ) {
+			return Promise.reject( new Error( 'Missing page ' + page ) );
+		}
+		var localId = Text.nextId( text );
+		this.wiki[ page ] = Text.upsert( text, {
+			id: localId,
+			from: this._refFor( fromId, page ),
+			to: this._refFor( toId, page ),
+			tag: tag || '', inferred: false, evidence: []
+		} );
+		var id = page + '#' + localId;
+		this.doc.relationships[ id ] = {
+			from: fromId, to: toId, tag: tag || '',
+			tagColor: Text.hashColor( tag || '' ),
+			inferred: false, evidence: [],
+			hx: 0, hy: 0, hset: false, pinned: false
+		};
+		if ( tag && this.tags.indexOf( tag ) === -1 ) { this.tags.push( tag ); }
+		persist();
+		return Promise.resolve( id );
+	};
+	MockStore.prototype.updateEdge = function ( id, changes ) {
+		var h = id.indexOf( '#' );
+		var page = id.slice( 0, h );
+		var rel = this.doc.relationships[ id ];
+		this.wiki[ page ] = Text.upsert( this.wiki[ page ], {
+			id: id.slice( h + 1 ),
+			from: this._refFor( rel.from, page ),
+			to: this._refFor( rel.to, page ),
+			tag: 'tag' in changes ? changes.tag : rel.tag,
+			inferred: 'inferred' in changes ? changes.inferred : rel.inferred,
+			evidence: 'evidence' in changes ? changes.evidence : rel.evidence
+		} );
+		if ( 'tag' in changes ) { rel.tag = changes.tag; rel.tagColor = Text.hashColor( changes.tag ); }
+		if ( 'inferred' in changes ) { rel.inferred = changes.inferred; }
+		if ( 'evidence' in changes ) { rel.evidence = changes.evidence; }
+		if ( rel.tag && this.tags.indexOf( rel.tag ) === -1 ) { this.tags.push( rel.tag ); }
+		persist();
+		return Promise.resolve();
+	};
+	MockStore.prototype.removeEdge = function ( id ) {
+		var self = this;
+		var order = [];
+		( function collect( target ) {
+			Object.keys( self.doc.relationships ).forEach( function ( oid ) {
+				var rel = self.doc.relationships[ oid ];
+				if ( ( rel.from === target || rel.to === target ) && order.indexOf( oid ) === -1 ) {
+					collect( oid );
+					order.push( oid );
+				}
+			} );
+		}( id ) );
+		order.push( id );
+		order.forEach( function ( eid ) {
+			var h = eid.indexOf( '#' );
+			var page = eid.slice( 0, h );
+			if ( self.wiki[ page ] !== undefined ) {
+				self.wiki[ page ] = Text.remove( self.wiki[ page ], eid.slice( h + 1 ) );
+			}
+			delete self.doc.relationships[ eid ];
+		} );
+		persist();
+		return Promise.resolve();
+	};
+	MockStore.prototype.setType = function ( title, typeName ) {
+		var thing = this.doc.things[ title ];
+		if ( typeName && this.wiki[ 'Category:' + typeName ] === undefined ) {
+			this.wiki[ 'Category:' + typeName ] =
+				'{{#inferencetype:color=' + Text.hashColor( typeName ) + '}}\n';
+		}
+		this.wiki[ title ] = Text.replaceCategory( this.wiki[ title ], thing.type, typeName );
+		thing.type = typeName || null;
+		thing.color = typeName ? this.typeColorOf( typeName ) : '#8d8d8d';
+		persist();
+		return Promise.resolve();
+	};
+
+	// ---- boot ----
+	var store = new MockStore( state.wiki, state.view );
+	store.load().then( function ( doc ) {
+		var graph = new InferencesGraph( document.getElementById( 'stage' ), {
+			store: store,
+			doc: doc,
+			editable: true,
+			resolveHref: function ( title ) { return '#' + encodeURIComponent( title ); },
+			navigate: function ( title ) { console.log( 'navigate:', title ); },
+			notify: function ( msg, isError ) { console.log( ( isError ? 'ERROR: ' : '' ) + msg ); },
+			pageApi: {
+				load: function ( title ) {
+					return Promise.resolve( {
+						exists: state.wiki[ title ] !== undefined,
+						text: state.wiki[ title ] || ''
+					} );
+				},
+				save: function ( title, text ) {
+					state.wiki[ title ] = text;
+					persist();
+					return Promise.resolve();
+				}
+			},
+			onDirtyChange: function ( dirty ) { saveBtn.disabled = !dirty; }
+		} );
+		store.attach( graph );
+		var saveBtn = graph.addToolbarButton( 'Save layout', function () {
+			store.saveLayout().then( function () { graph.markLayoutSaved(); } );
+		}, { primary: true } );
+		saveBtn.disabled = true;
+		window.graph = graph; // for tests
+		window.store = store;
 	} );
-	var saveBtn = graph.addToolbarButton( 'Save (localStorage)', function () {
-		localStorage.setItem( 'inferences-dev-doc', graph.getDocJson() );
-		graph.markSaved();
-	}, { primary: true } );
-	saveBtn.disabled = true;
-	window.graph = graph; // for tests
 </script>
 </body>
 </html>

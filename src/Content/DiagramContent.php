@@ -6,23 +6,19 @@ use MediaWiki\Content\JsonContent;
 use MediaWiki\Json\FormatJson;
 
 /**
- * A diagram document: things (nodes, optionally linked to wiki pages),
- * relationships (tagged edges carrying evidence), and tags.
- *
- * Stored as JSON so MediaWiki gives us revisions, diffs, talk pages and
- * permissions on every diagram. The shape mirrors the native Rust app:
+ * A diagram VIEW definition. The wiki itself is the graph: things are
+ * ordinary wiki pages, relationships are {{#inference:…}} calls in those
+ * pages' wikitext, and types are categories. This page only stores what
+ * is specific to one view of that graph:
  *
  *   {
- *     "version": 1,
+ *     "version": 2,
+ *     "category": "Wayland",          // scope: auto-include this category
+ *     "pages": [ "Some page" ],       // manually added members
  *     "view": { "x": 0, "y": 0, "zoom": 1 },
- *     "tags": { "<id>": { "name": "causes", "color": "#e5484d" } },
- *     "things": { "<id>": { "name": "...", "color": "#...", "x": 0, "y": 0,
- *                            "pinned": false, "link": "Wiki page title" } },
- *     "relationships": { "<id>": { "from": "<thingId>", "to": "<thingId>",
- *                                   "tag": "<tagId>", "hx": 0, "hy": 0,
- *                                   "pinned": false,
- *                                   "evidence": [ { "source": "...", "snippet": "..." } ] } },
- *     "nextId": 1
+ *     "things": { "Page title": { "x": 0, "y": 0, "pinned": false } },
+ *     "edges": { "Page title#1": { "hx": 0, "hy": 0, "hset": false,
+ *                                   "pinned": false } }
  *   }
  */
 class DiagramContent extends JsonContent {
@@ -34,19 +30,18 @@ class DiagramContent extends JsonContent {
 
 	public static function defaultDocument(): string {
 		return FormatJson::encode( [
-			'version' => 1,
+			'version' => 2,
+			'category' => '',
+			'pages' => [],
 			'view' => [ 'x' => 0, 'y' => 0, 'zoom' => 1 ],
-			'tags' => (object)[],
 			'things' => (object)[],
-			'relationships' => (object)[],
-			'nextId' => 1,
+			'edges' => (object)[],
 		], "\t" );
 	}
 
 	/**
-	 * Valid JSON whose top level looks like a diagram document. Kept
-	 * structural (types only) so hand-edited drafts aren't rejected
-	 * for minor issues the editor can repair on load.
+	 * Valid JSON whose top level looks like a view document. Kept
+	 * structural (types only) so hand-edited drafts aren't rejected.
 	 */
 	public function isValid() {
 		if ( !parent::isValid() ) {
@@ -56,7 +51,16 @@ class DiagramContent extends JsonContent {
 		if ( !is_object( $data ) ) {
 			return false;
 		}
-		foreach ( [ 'things', 'relationships', 'tags', 'types' ] as $field ) {
+		if ( isset( $data->pages ) && !is_array( $data->pages ) ) {
+			return false;
+		}
+		if ( isset( $data->category ) && !is_string( $data->category ) ) {
+			return false;
+		}
+		if ( isset( $data->allPages ) && !is_bool( $data->allPages ) ) {
+			return false;
+		}
+		foreach ( [ 'things', 'edges', 'view' ] as $field ) {
 			if ( isset( $data->$field ) && !is_object( $data->$field ) ) {
 				return false;
 			}
@@ -65,9 +69,7 @@ class DiagramContent extends JsonContent {
 	}
 
 	/**
-	 * Index the human-readable parts of the diagram — thing names, type
-	 * names ("program"), tag names, linked titles, evidence — so wiki
-	 * search finds diagrams by their content rather than JSON syntax.
+	 * Make the view findable: its scope category and member page names.
 	 */
 	public function getTextForSearchIndex() {
 		$data = $this->getData()->getValue();
@@ -75,53 +77,46 @@ class DiagramContent extends JsonContent {
 			return parent::getTextForSearchIndex();
 		}
 		$words = [];
-		foreach ( [ 'things', 'types', 'tags' ] as $field ) {
-			if ( isset( $data->$field ) && is_object( $data->$field ) ) {
-				foreach ( get_object_vars( $data->$field ) as $entry ) {
-					if ( is_object( $entry ) ) {
-						foreach ( [ 'name', 'link' ] as $key ) {
-							if ( isset( $entry->$key ) && is_string( $entry->$key ) ) {
-								$words[] = $entry->$key;
-							}
-						}
+		if ( isset( $data->category ) && is_string( $data->category ) ) {
+			$words[] = $data->category;
+		}
+		foreach ( [ 'pages' ] as $listField ) {
+			if ( isset( $data->$listField ) && is_array( $data->$listField ) ) {
+				foreach ( $data->$listField as $title ) {
+					if ( is_string( $title ) ) {
+						$words[] = $title;
 					}
 				}
 			}
 		}
-		if ( isset( $data->relationships ) && is_object( $data->relationships ) ) {
-			foreach ( get_object_vars( $data->relationships ) as $rel ) {
-				if ( is_object( $rel ) && isset( $rel->evidence ) && is_array( $rel->evidence ) ) {
-					foreach ( $rel->evidence as $evidence ) {
-						foreach ( [ 'source', 'snippet' ] as $key ) {
-							if ( is_object( $evidence ) && isset( $evidence->$key )
-								&& is_string( $evidence->$key )
-							) {
-								$words[] = $evidence->$key;
-							}
-						}
-					}
-				}
-			}
+		if ( isset( $data->things ) && is_object( $data->things ) ) {
+			$words = array_merge( $words, array_keys( get_object_vars( $data->things ) ) );
 		}
 		return implode( "\n", array_filter( array_unique( $words ) ) );
 	}
 
 	/**
-	 * Wiki page titles referenced by things in this diagram.
+	 * Wiki pages this view references (manual members + laid-out pages).
 	 * @return string[]
 	 */
 	public function getLinkedTitles(): array {
 		$titles = [];
 		$data = $this->getData()->getValue();
-		if ( is_object( $data ) && isset( $data->things ) && is_object( $data->things ) ) {
-			foreach ( get_object_vars( $data->things ) as $thing ) {
-				if ( is_object( $thing ) && isset( $thing->link )
-					&& is_string( $thing->link ) && $thing->link !== ''
-				) {
-					$titles[] = $thing->link;
+		if ( !is_object( $data ) ) {
+			return $titles;
+		}
+		if ( isset( $data->pages ) && is_array( $data->pages ) ) {
+			foreach ( $data->pages as $title ) {
+				if ( is_string( $title ) && $title !== '' ) {
+					$titles[] = $title;
 				}
 			}
 		}
-		return $titles;
+		if ( isset( $data->things ) && is_object( $data->things ) ) {
+			foreach ( array_keys( get_object_vars( $data->things ) ) as $title ) {
+				$titles[] = (string)$title;
+			}
+		}
+		return array_unique( $titles );
 	}
 }

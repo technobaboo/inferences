@@ -38,6 +38,9 @@
 			"i18n"
 		]
 	},
+	"ExtensionMessagesFiles": {
+		"InferencesMagic": "Inferences.i18n.magic.php"
+	},
 	"Hooks": {
 		"ParserFirstCallInit": "main"
 	},
@@ -54,7 +57,9 @@
 		"ext.inferences.diagram": {
 			"packageFiles": [
 				"ext.inferences.diagram/init.js",
-				"ext.inferences.diagram/Graph.js"
+				"ext.inferences.diagram/Graph.js",
+				"ext.inferences.diagram/InferenceText.js",
+				"ext.inferences.diagram/WikiStore.js"
 			],
 			"styles": [
 				"ext.inferences.diagram/styles.css"

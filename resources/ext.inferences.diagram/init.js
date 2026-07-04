@@ -1,18 +1,20 @@
 /**
- * MediaWiki glue for the Inferences diagram canvas.
+ * MediaWiki glue for the Inferences canvas.
  *
  * Two hydration paths:
  *  - Diagram-namespace pages: the ContentHandler emits a container with
- *    the document JSON in data-inferences-doc. Editable in place; saving
- *    writes the JSON back with action=edit, so every save is an ordinary
- *    wiki revision.
+ *    the view definition JSON (scope category, manual pages, layout) in
+ *    data-inferences-view. The WikiStore loads the actual graph from
+ *    the member pages' wikitext; semantic edits become immediate page
+ *    edits, layout is saved back to the view page with "Save layout".
  *  - <inferences-diagram page="…"/> embeds: the container carries
- *    data-inferences-page; the document is fetched via the API and
- *    rendered read-only.
+ *    data-inferences-page; the view definition is fetched via the API
+ *    and rendered read-only.
  */
 'use strict';
 
 var Graph = require( './Graph.js' );
+var WikiStore = require( './WikiStore.js' );
 
 function resolveHref( title ) {
 	return mw.util.getUrl( title );
@@ -81,87 +83,93 @@ var pageApi = {
 	}
 };
 
+function showError( container, message ) {
+	container.textContent = message;
+	container.classList.add( 'ext-inferences-diagram-error' );
+}
+
 function initDiagramPage( container ) {
-	var doc;
+	var viewDoc;
 	try {
-		doc = JSON.parse( container.getAttribute( 'data-inferences-doc' ) );
+		viewDoc = JSON.parse( container.getAttribute( 'data-inferences-view' ) );
 	} catch ( e ) {
 		return;
 	}
 	container.classList.add( 'ext-inferences-diagram-page' );
 
-	var graph = new Graph( container, {
-		doc: doc,
-		editable: false,
-		resolveHref: resolveHref,
-		navigate: navigate,
-		isDark: wikiIsDark,
-		pageApi: pageApi,
-		notify: notify,
-		onDirtyChange: function ( dirty ) {
-			if ( saveBtn ) {
-				saveBtn.disabled = !dirty;
-				saveBtn.textContent = dirty ? 'Save changes' : 'Saved';
+	var viewTitle = mw.config.get( 'wgPageName' ).replace( /_/g, ' ' );
+	var store = new WikiStore( { viewTitle: viewTitle, viewDoc: viewDoc } );
+	var saveBtn;
+
+	store.load().then( function ( doc ) {
+		var graph = new Graph( container, {
+			store: store,
+			doc: doc,
+			editable: false,
+			resolveHref: resolveHref,
+			navigate: navigate,
+			isDark: wikiIsDark,
+			pageApi: pageApi,
+			notify: notify,
+			onDirtyChange: function ( dirty ) {
+				if ( saveBtn ) {
+					saveBtn.disabled = !dirty;
+					saveBtn.textContent = dirty ? 'Save layout' : 'Layout saved';
+				}
 			}
-		}
-	} );
-	followWikiTheme( graph );
-	// dev/testing affordance: reach the instance from the console
-	container.infGraph = graph;
-
-	if ( !mw.config.get( 'wgIsProbablyEditable' ) ) {
-		return;
-	}
-
-	var originalJson = JSON.stringify( graph.getDoc() );
-	var editBtn, saveBtn, cancelBtn;
-
-	function setEditing( editing ) {
-		graph.setEditable( editing );
-		editBtn.style.display = editing ? 'none' : '';
-		saveBtn.style.display = editing ? '' : 'none';
-		cancelBtn.style.display = editing ? '' : 'none';
-	}
-
-	editBtn = graph.addToolbarButton( 'Edit diagram', function () {
-		originalJson = JSON.stringify( graph.getDoc() );
-		setEditing( true );
-	}, { primary: true } );
-
-	saveBtn = graph.addToolbarButton( 'Save changes', function () {
-		saveBtn.disabled = true;
-		saveBtn.textContent = 'Saving…';
-		new mw.Api().postWithEditToken( {
-			action: 'edit',
-			title: mw.config.get( 'wgPageName' ),
-			text: graph.getDocJson(),
-			summary: 'Edited with the Inferences diagram editor'
-		} ).done( function () {
-			graph.markSaved();
-			originalJson = JSON.stringify( graph.getDoc() );
-			saveBtn.textContent = 'Saved';
-			mw.notify( 'Diagram saved.' );
-		} ).fail( function ( code ) {
-			saveBtn.disabled = false;
-			saveBtn.textContent = 'Save changes';
-			mw.notify( 'Saving failed: ' + code, { type: 'error' } );
 		} );
-	}, { primary: true } );
-	saveBtn.style.display = 'none';
-	saveBtn.disabled = true;
-	saveBtn.textContent = 'Saved';
+		store.attach( graph );
+		followWikiTheme( graph );
+		// dev/testing affordance: reach the instance from the console
+		container.infGraph = graph;
+		container.infStore = store;
 
-	cancelBtn = graph.addToolbarButton( 'Cancel', function () {
-		graph.setDoc( JSON.parse( originalJson ) );
-		setEditing( false );
-	} );
-	cancelBtn.style.display = 'none';
-
-	window.addEventListener( 'beforeunload', function ( e ) {
-		if ( graph.dirty ) {
-			e.preventDefault();
-			e.returnValue = '';
+		if ( !mw.config.get( 'wgIsProbablyEditable' ) ) {
+			return;
 		}
+
+		var editBtn, doneBtn;
+
+		function setEditing( editing ) {
+			graph.setEditable( editing );
+			editBtn.style.display = editing ? 'none' : '';
+			saveBtn.style.display = editing ? '' : 'none';
+			doneBtn.style.display = editing ? '' : 'none';
+		}
+
+		editBtn = graph.addToolbarButton( 'Edit view', function () {
+			setEditing( true );
+		}, { primary: true } );
+
+		saveBtn = graph.addToolbarButton( 'Layout saved', function () {
+			saveBtn.disabled = true;
+			saveBtn.textContent = 'Saving…';
+			store.saveLayout().then( function () {
+				graph.markLayoutSaved();
+				saveBtn.textContent = 'Layout saved';
+				mw.notify( 'Layout saved.' );
+			}, function ( err ) {
+				saveBtn.disabled = false;
+				saveBtn.textContent = 'Save layout';
+				mw.notify( 'Saving layout failed: ' + err, { type: 'error' } );
+			} );
+		}, { primary: true } );
+		saveBtn.style.display = 'none';
+		saveBtn.disabled = true;
+
+		doneBtn = graph.addToolbarButton( 'Done', function () {
+			setEditing( false );
+		} );
+		doneBtn.style.display = 'none';
+
+		window.addEventListener( 'beforeunload', function ( e ) {
+			if ( graph.layoutDirty ) {
+				e.preventDefault();
+				e.returnValue = '';
+			}
+		} );
+	}, function ( err ) {
+		showError( container, 'Could not load the diagram: ' + err );
 	} );
 }
 
@@ -170,46 +178,37 @@ function initEmbed( container ) {
 	var height = parseInt( container.getAttribute( 'data-inferences-height' ), 10 ) || 480;
 	container.style.height = height + 'px';
 
-	new mw.Api().get( {
-		action: 'query',
-		prop: 'revisions',
-		titles: page,
-		rvprop: [ 'content' ],
-		rvslots: 'main',
-		formatversion: 2
-	} ).done( function ( res ) {
-		var pageData = res.query && res.query.pages && res.query.pages[ 0 ];
-		var rev = pageData && !pageData.missing &&
-			pageData.revisions && pageData.revisions[ 0 ];
-		var content = rev && rev.slots && rev.slots.main && rev.slots.main.content;
-		if ( !content ) {
-			container.textContent = 'Diagram not found: ' + page;
-			container.classList.add( 'ext-inferences-diagram-error' );
+	pageApi.load( page ).then( function ( result ) {
+		if ( !result.exists ) {
+			showError( container, 'Diagram not found: ' + page );
 			return;
 		}
-		var doc;
+		var viewDoc;
 		try {
-			doc = JSON.parse( content );
+			viewDoc = JSON.parse( result.text );
 		} catch ( e ) {
-			container.textContent = 'Not a valid diagram: ' + page;
-			container.classList.add( 'ext-inferences-diagram-error' );
+			showError( container, 'Not a valid diagram: ' + page );
 			return;
 		}
-		var graph = new Graph( container, {
-			doc: doc,
-			editable: false,
-			resolveHref: resolveHref,
-			navigate: navigate,
-			isDark: wikiIsDark
+		var store = new WikiStore( { viewTitle: page, viewDoc: viewDoc } );
+		return store.load().then( function ( doc ) {
+			var graph = new Graph( container, {
+				store: store,
+				doc: doc,
+				editable: false,
+				resolveHref: resolveHref,
+				navigate: navigate,
+				isDark: wikiIsDark
+			} );
+			store.attach( graph );
+			followWikiTheme( graph );
+			var open = graph.addToolbarButton( '⧉ ' + page, function () {
+				window.location.href = mw.util.getUrl( page );
+			} );
+			open.title = 'Open the diagram page';
 		} );
-		followWikiTheme( graph );
-		var open = graph.addToolbarButton( '⧉ ' + page, function () {
-			window.location.href = mw.util.getUrl( page );
-		} );
-		open.title = 'Open the diagram page';
-	} ).fail( function () {
-		container.textContent = 'Could not load diagram: ' + page;
-		container.classList.add( 'ext-inferences-diagram-error' );
+	} ).catch( function ( err ) {
+		showError( container, 'Could not load diagram: ' + page + ' (' + err + ')' );
 	} );
 }
 
@@ -219,7 +218,7 @@ mw.hook( 'wikipage.content' ).add( function ( $content ) {
 			return;
 		}
 		node.dataset.inferencesInitialized = '1';
-		if ( node.hasAttribute( 'data-inferences-doc' ) ) {
+		if ( node.hasAttribute( 'data-inferences-view' ) ) {
 			initDiagramPage( node );
 		} else if ( node.hasAttribute( 'data-inferences-page' ) ) {
 			initEmbed( node );

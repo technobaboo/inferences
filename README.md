@@ -1,16 +1,38 @@
 # Inferences
 
-A MediaWiki extension for diagramming complex systems as a shared,
-contributable wiki: **things** (nodes, optionally linked to wiki pages, with
-optional shared **types** like "program"), tagged **relationships** between
-them — including relationships *about* other relationships — and **evidence**
-(source + snippet) attached to relationships, laid out by hand on an infinite
-canvas so the spatial arrangement carries meaning.
+A MediaWiki extension that turns the wiki itself into a hand-laid-out
+system diagram. The canvas is an **interface over real wiki pages**, not an
+editor for its own document format:
 
-Diagrams are ordinary wiki pages in a `Diagram:` namespace, stored as JSON
-via a custom content model. That means every diagram automatically gets what
-a wiki gives pages: **revision history, diffs, talk pages, watchlists, and
-permissions** — nothing bespoke to run or maintain beyond MediaWiki itself.
+- A **thing** on the canvas *is* a wiki page. Creating a thing creates the
+  page; renaming a thing moves it (redirect included); clicking it opens it.
+- A **relationship** is a `{{#inference:…}}` call written into the source
+  article's own wikitext — visible in the article as an inline chip,
+  versioned with the page, revertable like any edit, and hand-editable.
+- A relationship's endpoint can be **another relationship** (reification):
+  `to=Wayland client#1` points at inference #1 on the "Wayland client"
+  page, so a "Unix domain socket" can be the *transport for* the edge
+  between a client and a compositor. Meta-edges anchor at the target
+  edge's label pill.
+- Relationships can be marked **inferred** (`inferred=yes` — deduced, not
+  directly observed), drawn dashed with a "∴" marker, and carry
+  **evidence** (source + snippet pairs).
+- A thing's **type** is a category: typing something as "Programs" adds
+  `[[Category:Programs]]` to its page. A category becomes a type by
+  carrying `{{#inferencetype: color=#46a758}}` on its category page (the
+  canvas creates this automatically for new types). All things of a type
+  share its color; colors default to a hash of the name so they are
+  consistent everywhere without configuration.
+- A `Diagram:` page defines a **view**: a scope category whose members
+  appear automatically, manually added pages, and the layout (positions,
+  curve handles, pinned cards, pan/zoom) — the only data that belongs to
+  the view rather than to the wiki. Pages referenced by inferences but
+  outside the view appear as ghost nodes; missing pages render dashed in
+  red-link color.
+
+Because everything semantic lives on ordinary pages, every canvas edit is
+an ordinary wiki edit with a descriptive summary — watchlists, diffs,
+history, talk pages, permissions and search all just work.
 
 ## Installing
 
@@ -28,98 +50,103 @@ Then add to `LocalSettings.php`:
 wfLoadExtension( 'Inferences' );
 ```
 
-Create a page like `Diagram:My first diagram`, put `{}` in it, and click
-**Edit diagram** in the canvas toolbar. Updating is `git pull`.
+Create a page like `Diagram:System map` with content:
 
-Hosted options work too: any host that allows custom extensions (e.g.
-[ProWiki](https://www.pro.wiki/)) can run this.
-
-## Features
-
-- Infinite pannable/zoomable canvas with an adaptive grid
-- **Right-click** empty space to add a thing; **right-drag** from a thing to
-  connect it (release on empty space to create *and* connect a new thing)
-- Relationships are curved edges carrying a **tag** (typed, colored, reusable
-  across the diagram) and a list of **evidence** entries (source + snippet)
-- Relationships can be marked **inferred** (deduced rather than directly
-  observed) — drawn dashed with a "∴" marker
-- **Relationships about relationships**: an edge's endpoint can be another
-  edge (anchored at its label pill), so a "Unix domain socket" thing can be
-  the *transport for* the "connects" relationship between two other things.
-  Right-drag onto (or from) an edge exactly like a node; deleting anything
-  cascades through edges attached to edges
-- Things can carry a **type** (e.g. "program"): types have a shared name and
-  color, so every program looks the same, and type names are fed to the wiki
-  search index so `Special:Search` finds diagrams by type
-- Things can **link to wiki pages** — readers click a node to follow the
-  link, linked pages show the diagram under "What links here", and a thing's
-  card can **edit the linked page's full source in place** (creating it if
-  it doesn't exist)
-- A thing's card also lists **all its relationships**, click to inspect each
-- The canvas **follows the page's light/dark mode** — Vector 2022's night
-  mode inside MediaWiki, `prefers-color-scheme` elsewhere — switching live
-- **Pinnable inspector cards**: pin a thing's or relationship's card open and
-  it stays visible for every reader — pins are saved in the document
-- Undo/redo; saves are ordinary wiki revisions; raw JSON editing stays
-  available through the normal edit action
-- Embed any diagram read-only in an article:
-
-  ```
-  <inferences-diagram page="My system" height="480" />
-  ```
-
-## Developing without a wiki
-
-The canvas is a standalone module with no MediaWiki dependency
-(`resources/ext.inferences.diagram/Graph.js`; the thin adapter in `init.js`
-is the only MediaWiki-aware code). Open `dev/preview.html` directly in a
-browser to hack on the editor — it saves to localStorage, append `?fresh`
-to reset.
-
-## Document format
-
-```jsonc
+```json
 {
-	"version": 1,
-	"view": { "x": 0, "y": 0, "zoom": 1 },
-	"tags": { "1": { "name": "causes", "color": "#e5484d" } },
-	"types": { "6": { "name": "program", "color": "#46a758" } },
-	"things": {
-		"2": { "name": "Compositor", "color": "#3e63dd", "type": "6",
-		        "x": 0, "y": 0, "pinned": false, "link": "Compositor" }
-	},
-	"relationships": {
-		"3": { "from": "2", "to": "4", "tag": "1",
-		        "hx": 10, "hy": 20, "hset": true, "inferred": false,
-		        "pinned": false,
-		        "evidence": [ { "source": "https://…", "snippet": "…" } ] }
-	},
-	"nextId": 7
+	"version": 2,
+	"category": "My topic",
+	"pages": []
 }
 ```
 
-`from`/`to` may name a thing **or another relationship** — things,
-relationships, tags and types share one ID space, and a relationship
-endpoint anchors at that edge's midpoint. Cycles and dangling endpoints are
-dropped on load. `hx`/`hy` is the edge's curve handle; `hset` records
-whether it was placed by hand (otherwise it follows its endpoints as they
-move). IDs are never reused, so external annotations can reference them
-stably.
+The canvas shows every page in `Category:My topic`; click **Edit view** to
+start drawing. Updating the extension is `git pull`.
+
+To show the **whole wiki** instead of one category (there is no built-in
+"category of all pages" in MediaWiki), use:
+
+```json
+{
+	"version": 2,
+	"allPages": true,
+	"pages": []
+}
+```
+
+This scopes the view to every page in the main namespace (redirects
+excluded, first 500 pages). `"category": "*"` is accepted as a shorthand.
+
+To put a diagram on your Main Page (or any article):
+
+```
+<inferences-diagram page="System map" height="600" />
+```
+
+## Editing
+
+| Gesture | Effect |
+|---|---|
+| right-click empty space | create a page (and add it to the view) |
+| right-drag thing → thing | write an inference into the source article |
+| right-drag thing → edge pill | relationship *about* a relationship |
+| right-drag onto empty space | create a new page and connect it |
+| click a thing/edge | inspector card (pin 📌 to keep open for readers) |
+| drag the diamond | reshape a selected edge (layout) |
+| Delete | edge: remove the inference call; thing: remove from view |
+
+Semantic edits (connect, tag, inferred, evidence, type, rename, create)
+apply to the pages **immediately**. Layout changes are batched behind the
+**Save layout** button and go to the Diagram page. To undo a semantic
+edit, use the page's history like any wiki edit.
+
+The thing card also lists all of the page's relationships and can edit the
+page's full wikitext source in place. Removing a category-scoped page from
+a view isn't possible from the canvas — remove the category from the page
+instead (the error message says so).
+
+The canvas follows the page's light/dark mode (Vector 2022 night mode,
+or `prefers-color-scheme` elsewhere), switching live.
+
+## The wikitext
+
+Everything the canvas writes is plain, hand-editable syntax:
+
+```wikitext
+A Wayland client application.
+{{#inference:id=1|to=Compositor|tag=talks to|inferred=yes
+  |evidence1=https://wayland.freedesktop.org/docs/html/|snippet1=wl_surface.commit is atomic.}}
+[[Category:Wayland]]
+```
+
+`id` is stable per page and never reused, so `Page#id` references stay
+valid; `to=`/`from=` accept `Title`, `Title#id`, or `#id` (an inference on
+the same page). Values containing `|` are escaped as `{{!}}`. The parser
+function renders an inline chip, registers the target as a page link
+(so "What links here" works), and exposes all of a page's inferences in
+the `inferences` page property for queries.
+
+## Developing without a wiki
+
+`resources/ext.inferences.diagram/Graph.js` (canvas) and
+`InferenceText.js` (wikitext parsing/serialization) have no MediaWiki
+dependencies; `WikiStore.js` + `init.js` are the only MediaWiki-aware
+code. Open `dev/preview.html` in a browser to hack on the editor against
+a mock in-memory wiki that uses the same wikitext code — state persists in
+localStorage, append `?fresh` to reset.
 
 ## Roadmap
 
-- **Observation overlays**: separate contributed layers (e.g.
-  `Diagram:Foo/Observations/SomeUser` subpages) that reference a base
-  diagram's stable thing/relationship IDs and record experienced input/output
-  behavior, rendered as toggleable overlays so observations can be compared
-  side by side
-- Red-link styling for things linked to pages that don't exist yet
-- i18n for editor UI strings (currently English, in `Graph.js`)
+- **Observation overlays**: contributed layers recording experienced
+  input/output behavior against stable `Page#id` references, rendered as
+  toggleable overlays for comparison
+- Incoming inferences from pages outside the view (via the `inferences`
+  page property + backlinks)
+- i18n for editor UI strings and localized `Category:` prefixes
 - Touch/mobile gesture support
 
 ## History
 
-Inferences started as a native Rust + egui prototype; the canvas editor is a
-faithful port of its scene (adaptive power-of-two grid, right-click to add,
-pinning). The prototype lives in this repository's git history prior to the
-extension restructure.
+Inferences started as a native Rust + egui prototype, then a wiki-stored
+document editor; both live in this repository's git history. The current
+architecture stores nothing semantic of its own — the wiki is the graph.
