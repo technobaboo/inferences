@@ -1,0 +1,10 @@
+{
+	"@metadata": {
+		"authors": [
+			"technobaboo"
+		]
+	},
+	"inferences-desc": "Adds a Diagram namespace for hand-drawn system diagrams: things linked to wiki pages, tagged relationships between them, and evidence attached to relationships",
+	"inferences-embed-missing-page": "The <code>&lt;inferences-diagram&gt;</code> tag needs a <code>page</code> attribute naming a page in the Diagram namespace.",
+	"inferences-invalid-doc": "This page does not contain a valid Inferences diagram document."
+}

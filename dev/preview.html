@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inferences — canvas dev harness</title>
+<link rel="stylesheet" href="../resources/ext.inferences.diagram/styles.css">
+<style>
+	html, body { margin: 0; height: 100%; background: #101013; font-family: sans-serif; }
+	#stage { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div id="stage" class="ext-inferences-diagram"></div>
+<script src="../resources/ext.inferences.diagram/Graph.js"></script>
+<script>
+	// Standalone harness: same widget the wiki uses, minus MediaWiki.
+	// Saves to localStorage so you can iterate on the editor itself with
+	// nothing but a browser. Append ?fresh to reset.
+	var SAMPLE = {
+		version: 1,
+		view: { x: 0, y: 0, zoom: 1 },
+		tags: {
+			'1': { name: 'sends frames to', color: '#00a2c7' },
+			'2': { name: 'depends on', color: '#f76b15' },
+			'8': { name: 'transport for', color: '#8e4ec6' }
+		},
+		types: {
+			'11': { name: 'program', color: '#46a758' },
+			'12': { name: 'ipc primitive', color: '#8e4ec6' }
+		},
+		things: {
+			'3': { name: 'Wayland client', color: '#8d8d8d', type: '11', x: -180, y: -60, pinned: false, link: 'Wayland' },
+			'4': { name: 'Compositor', color: '#8d8d8d', type: '11', x: 60, y: 20, pinned: false, link: 'Compositor' },
+			'5': { name: 'GPU driver', color: '#e5484d', type: null, x: 240, y: -140, pinned: false, link: '' },
+			'9': { name: 'Unix domain socket', color: '#8d8d8d', type: '12', x: -320, y: 160, pinned: false, link: '' }
+		},
+		relationships: {
+			'6': {
+				from: '3', to: '4', tag: '1', hx: -60, hy: 60, hset: true, pinned: false,
+				evidence: [ { source: 'https://wayland.freedesktop.org/docs/html/', snippet: 'wl_surface.commit atomically applies pending state.' } ]
+			},
+			// inferred: deduced from behavior, not directly observed
+			'7': { from: '4', to: '5', tag: '2', hx: 150, hy: -60, hset: false, inferred: true, pinned: false, evidence: [] },
+			// a relationship *about* a relationship: the socket is the
+			// transport for the client -> compositor edge
+			'10': { from: '9', to: '6', tag: '8', hx: 0, hy: 0, hset: false, pinned: false, evidence: [] }
+		},
+		nextId: 13
+	};
+
+	var stored = null;
+	if ( window.location.search.indexOf( 'fresh' ) === -1 ) {
+		try { stored = JSON.parse( localStorage.getItem( 'inferences-dev-doc' ) ); } catch ( e ) {}
+	}
+
+	var graph = new InferencesGraph( document.getElementById( 'stage' ), {
+		doc: stored || SAMPLE,
+		editable: true,
+		resolveHref: function ( title ) { return 'https://en.wikipedia.org/wiki/' + encodeURIComponent( title ); },
+		navigate: function ( title ) { console.log( 'navigate:', title ); },
+		notify: function ( msg, isError ) { console.log( ( isError ? 'ERROR: ' : '' ) + msg ); },
+		// mock wiki-page storage so the card's page editor is testable
+		pageApi: {
+			load: function ( title ) {
+				var text = localStorage.getItem( 'inferences-dev-page:' + title );
+				return Promise.resolve( { exists: text !== null, text: text || '' } );
+			},
+			save: function ( title, text ) {
+				localStorage.setItem( 'inferences-dev-page:' + title, text );
+				return Promise.resolve();
+			}
+		},
+		onDirtyChange: function ( dirty ) { saveBtn.disabled = !dirty; }
+	} );
+	var saveBtn = graph.addToolbarButton( 'Save (localStorage)', function () {
+		localStorage.setItem( 'inferences-dev-doc', graph.getDocJson() );
+		graph.markSaved();
+	}, { primary: true } );
+	saveBtn.disabled = true;
+	window.graph = graph; // for tests
+</script>
+</body>
+</html>

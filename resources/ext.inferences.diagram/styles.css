@@ -1,0 +1,388 @@
+/*
+ * Theme variables. The canvas reads these with getComputedStyle, so the
+ * whole widget — DOM and canvas drawing alike — follows one palette.
+ * Graph.js toggles .inf-theme-dark / .inf-theme-light on the container:
+ * inside MediaWiki that follows Vector's night-mode classes, elsewhere
+ * it follows prefers-color-scheme.
+ */
+.inf-theme-light {
+	--inf-bg: #f8f9fa;
+	--inf-grid-rgb: 100, 100, 100;
+	--inf-node-fill: #ffffff;
+	--inf-text: #202122;
+	--inf-muted: #72777d;
+	--inf-link: #3366cc;
+	--inf-ghost-rgb: 32, 33, 34;
+	--inf-surface: #ffffff;
+	--inf-surface-2: #eaecf0;
+	--inf-border: #a2a9b1;
+	--inf-accent: #3366cc;
+	--inf-accent-text: #ffffff;
+	--inf-danger: #bf3c2c;
+	--inf-shadow: rgba( 0, 0, 0, 0.2 );
+}
+
+.inf-theme-dark {
+	--inf-bg: #1b1b1f;
+	--inf-grid-rgb: 128, 128, 128;
+	--inf-node-fill: #26262b;
+	--inf-text: #e6e6e6;
+	--inf-muted: #9a9aa2;
+	--inf-link: #9ab4ff;
+	--inf-ghost-rgb: 255, 255, 255;
+	--inf-surface: #26262b;
+	--inf-surface-2: #1f1f24;
+	--inf-border: #4a4a52;
+	--inf-accent: #3e63dd;
+	--inf-accent-text: #ffffff;
+	--inf-danger: #ff9498;
+	--inf-shadow: rgba( 0, 0, 0, 0.5 );
+}
+
+.ext-inferences-diagram {
+	position: relative;
+	width: 100%;
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var( --inf-border, #54595d );
+}
+
+.ext-inferences-diagram-page {
+	height: 75vh;
+	min-height: 360px;
+}
+
+.inf-graph {
+	position: relative;
+	background: var( --inf-bg );
+	user-select: none;
+}
+
+.inf-canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	touch-action: none;
+}
+
+.inf-overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	overflow: hidden;
+}
+
+.inf-overlay > * {
+	pointer-events: auto;
+}
+
+.inf-toolbar {
+	position: absolute;
+	top: 8px;
+	left: 8px;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	pointer-events: none;
+}
+
+.inf-toolbar > * {
+	pointer-events: auto;
+}
+
+.inf-hint {
+	margin-left: auto;
+	font-size: 11px;
+	color: var( --inf-muted );
+	opacity: 0.8;
+	pointer-events: none;
+	text-align: right;
+}
+
+.inf-btn {
+	background: var( --inf-surface );
+	color: var( --inf-text );
+	border: 1px solid var( --inf-border );
+	border-radius: 4px;
+	padding: 3px 10px;
+	font-size: 12px;
+	cursor: pointer;
+	line-height: 1.5;
+}
+
+.inf-btn:hover:not( :disabled ) {
+	background: var( --inf-surface-2 );
+}
+
+.inf-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.inf-btn-primary {
+	background: var( --inf-accent );
+	border-color: var( --inf-accent );
+	color: var( --inf-accent-text );
+}
+
+.inf-btn-primary:hover:not( :disabled ) {
+	filter: brightness( 1.15 );
+	background: var( --inf-accent );
+}
+
+.inf-btn-danger {
+	border-color: var( --inf-danger );
+	color: var( --inf-danger );
+}
+
+.inf-btn-subtle {
+	border: 0;
+	background: transparent;
+	color: var( --inf-muted );
+}
+
+.inf-card {
+	position: absolute;
+	width: 230px;
+	background: var( --inf-surface );
+	color: var( --inf-text );
+	border: 1px solid var( --inf-border );
+	border-radius: 6px;
+	box-shadow: 0 4px 16px var( --inf-shadow );
+	font-size: 12px;
+	z-index: 5;
+}
+
+.inf-card-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 6px 5px 10px;
+	border-bottom: 1px solid var( --inf-border );
+	cursor: move;
+}
+
+.inf-card-title {
+	flex: 1;
+	font-weight: bold;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.inf-icon-btn {
+	background: transparent;
+	border: 0;
+	color: var( --inf-muted );
+	cursor: pointer;
+	font-size: 12px;
+	padding: 1px 4px;
+	border-radius: 3px;
+	filter: grayscale( 1 );
+}
+
+.inf-icon-btn:hover:not( :disabled ) {
+	background: var( --inf-surface-2 );
+	color: var( --inf-text );
+}
+
+.inf-icon-btn.inf-pinned {
+	filter: none;
+	color: #d99000;
+}
+
+.inf-card-body {
+	padding: 8px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.inf-input {
+	background: var( --inf-bg );
+	border: 1px solid var( --inf-border );
+	border-radius: 4px;
+	color: var( --inf-text );
+	font-size: 12px;
+	padding: 4px 6px;
+	width: 100%;
+	box-sizing: border-box;
+	font-family: inherit;
+}
+
+.inf-input:read-only,
+.inf-input:disabled {
+	opacity: 0.7;
+}
+
+.inf-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.inf-check {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+}
+
+.inf-check input {
+	margin: 0;
+}
+
+.inf-link-go {
+	color: var( --inf-link );
+	text-decoration: none;
+	font-size: 14px;
+}
+
+.inf-colors {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+}
+
+.inf-swatch {
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	border: 1px solid var( --inf-border );
+	cursor: pointer;
+	padding: 0;
+}
+
+.inf-swatch-active {
+	outline: 2px solid var( --inf-text );
+	outline-offset: 1px;
+}
+
+.inf-section-title {
+	font-weight: bold;
+	color: var( --inf-muted );
+	text-transform: uppercase;
+	font-size: 10px;
+	letter-spacing: 0.05em;
+	margin-top: 2px;
+}
+
+.inf-rel-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.inf-rel-item {
+	display: block;
+	width: 100%;
+	background: transparent;
+	border: 0;
+	color: var( --inf-text );
+	padding: 3px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	text-align: left;
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.inf-rel-item:hover {
+	background: var( --inf-surface-2 );
+}
+
+.inf-evidence {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	max-height: 200px;
+	overflow-y: auto;
+}
+
+.inf-evidence-item {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	padding: 6px;
+	padding-right: 22px;
+	background: var( --inf-surface-2 );
+	border-radius: 4px;
+}
+
+.inf-evidence-item .inf-icon-btn {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+}
+
+.inf-muted {
+	color: var( --inf-muted );
+	font-style: italic;
+}
+
+.inf-page-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.inf-page-editor textarea {
+	min-height: 110px;
+	resize: vertical;
+	font-family: monospace, monospace;
+	font-size: 11px;
+}
+
+.inf-tag-chooser {
+	padding: 8px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	width: 180px;
+}
+
+.inf-tag-option {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	background: transparent;
+	border: 0;
+	color: var( --inf-text );
+	padding: 4px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	text-align: left;
+	font-size: 12px;
+}
+
+.inf-tag-option:hover {
+	background: var( --inf-surface-2 );
+}
+
+.inf-tag-dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.inf-tag-new {
+	display: flex;
+	gap: 4px;
+}
+
+.ext-inferences-diagram-error {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var( --inf-muted, #85858d );
+	font-style: italic;
+	background: var( --inf-bg, #eaecf0 );
+}
