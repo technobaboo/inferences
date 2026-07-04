@@ -1,84 +1,82 @@
 # Inferences
 
-Diagram complex systems as a shared, contributable wiki: **things** (nodes,
-optionally linked to wiki pages), tagged **relationships** between them, and
-**evidence** (source + snippet) attached to relationships — laid out by hand
-on an infinite canvas, so the spatial arrangement carries meaning.
+A MediaWiki extension for diagramming complex systems as a shared,
+contributable wiki: **things** (nodes, optionally linked to wiki pages, with
+optional shared **types** like "program"), tagged **relationships** between
+them — including relationships *about* other relationships — and **evidence**
+(source + snippet) attached to relationships, laid out by hand on an infinite
+canvas so the spatial arrangement carries meaning.
 
-This repo contains two implementations of the same idea:
-
-| Directory | What it is |
-|---|---|
-| `extension/` | **Inferences**, a MediaWiki extension — the collaborative web version |
-| `src/` | The original native prototype (Rust + egui) |
-
-## The MediaWiki extension
-
-Diagrams are ordinary wiki pages in a `Diagram:` namespace, stored as JSON via
-a custom content model. That means every diagram automatically gets what a
-wiki gives pages: **revision history, diffs, talk pages, watchlists, and
+Diagrams are ordinary wiki pages in a `Diagram:` namespace, stored as JSON
+via a custom content model. That means every diagram automatically gets what
+a wiki gives pages: **revision history, diffs, talk pages, watchlists, and
 permissions** — nothing bespoke to run or maintain beyond MediaWiki itself.
 
-### Features
+## Installing
 
-- Infinite pannable/zoomable canvas with an adaptive grid (a port of the
-  native app's scene)
+Requires MediaWiki **>= 1.43**. Clone straight into your extensions
+directory (the directory must be named `Inferences`):
+
+```sh
+cd extensions
+git clone https://github.com/technobaboo/inferences.git Inferences
+```
+
+Then add to `LocalSettings.php`:
+
+```php
+wfLoadExtension( 'Inferences' );
+```
+
+Create a page like `Diagram:My first diagram`, put `{}` in it, and click
+**Edit diagram** in the canvas toolbar. Updating is `git pull`.
+
+Hosted options work too: any host that allows custom extensions (e.g.
+[ProWiki](https://www.pro.wiki/)) can run this.
+
+## Features
+
+- Infinite pannable/zoomable canvas with an adaptive grid
 - **Right-click** empty space to add a thing; **right-drag** from a thing to
   connect it (release on empty space to create *and* connect a new thing)
 - Relationships are curved edges carrying a **tag** (typed, colored, reusable
   across the diagram) and a list of **evidence** entries (source + snippet)
 - Relationships can be marked **inferred** (deduced rather than directly
   observed) — drawn dashed with a "∴" marker
-- Things can carry a **type** (e.g. "program"): types have a shared name and
-  color, so every program looks the same, and type names are fed to the wiki
-  search index so `Special:Search` finds diagrams by type
-- The canvas **follows the page's light/dark mode** — Vector 2022's night
-  mode inside MediaWiki, `prefers-color-scheme` elsewhere — switching live
-- A thing's card shows **all its relationships** (click to inspect each) and
-  can **edit its linked wiki page's full source in place**, creating the page
-  if it doesn't exist yet
 - **Relationships about relationships**: an edge's endpoint can be another
   edge (anchored at its label pill), so a "Unix domain socket" thing can be
   the *transport for* the "connects" relationship between two other things.
   Right-drag onto (or from) an edge exactly like a node; deleting anything
   cascades through edges attached to edges
+- Things can carry a **type** (e.g. "program"): types have a shared name and
+  color, so every program looks the same, and type names are fed to the wiki
+  search index so `Special:Search` finds diagrams by type
 - Things can **link to wiki pages** — readers click a node to follow the
-  link, and linked pages show the diagram under "What links here"
+  link, linked pages show the diagram under "What links here", and a thing's
+  card can **edit the linked page's full source in place** (creating it if
+  it doesn't exist)
+- A thing's card also lists **all its relationships**, click to inspect each
+- The canvas **follows the page's light/dark mode** — Vector 2022's night
+  mode inside MediaWiki, `prefers-color-scheme` elsewhere — switching live
 - **Pinnable inspector cards**: pin a thing's or relationship's card open and
   it stays visible for every reader — pins are saved in the document
-- Undo/redo, save-as-wiki-revision, raw JSON editing still available through
-  the normal edit action
+- Undo/redo; saves are ordinary wiki revisions; raw JSON editing stays
+  available through the normal edit action
 - Embed any diagram read-only in an article:
 
   ```
   <inferences-diagram page="My system" height="480" />
   ```
 
-### Installing
-
-Requires MediaWiki **>= 1.43**. Copy (or symlink) `extension/` into your wiki
-as `extensions/Inferences`, then add to `LocalSettings.php`:
-
-```php
-wfLoadExtension( 'Inferences' );
-```
-
-Create a page like `Diagram:My first diagram` and click **Edit diagram** in
-the canvas toolbar.
-
-Hosted options work too: any host that allows custom extensions (e.g.
-[ProWiki](https://www.pro.wiki/)) can run this. Bare `wikibase.cloud`-style
-hosts that don't allow custom extensions cannot.
-
-### Developing without a wiki
+## Developing without a wiki
 
 The canvas is a standalone module with no MediaWiki dependency
 (`resources/ext.inferences.diagram/Graph.js`; the thin adapter in `init.js`
-is the only MediaWiki-aware code). Open `extension/dev/preview.html` directly
-in a browser to hack on the editor — it saves to localStorage, append
-`?fresh` to reset.
+is the only MediaWiki-aware code). Open `dev/preview.html` directly in a
+browser to hack on the editor — it saves to localStorage, append `?fresh`
+to reset.
 
-### Document format
+## Document format
 
 ```jsonc
 {
@@ -101,14 +99,14 @@ in a browser to hack on the editor — it saves to localStorage, append
 ```
 
 `from`/`to` may name a thing **or another relationship** — things,
-relationships and tags share one ID space (as in the native app), and a
-relationship endpoint anchors at that edge's midpoint. Cycles and dangling
-endpoints are dropped on load. `hx`/`hy` is the edge's curve handle; `hset`
-records whether it was placed by hand (otherwise it follows its endpoints as
-they move). IDs are never reused, so external annotations can reference them
+relationships, tags and types share one ID space, and a relationship
+endpoint anchors at that edge's midpoint. Cycles and dangling endpoints are
+dropped on load. `hx`/`hy` is the edge's curve handle; `hset` records
+whether it was placed by hand (otherwise it follows its endpoints as they
+move). IDs are never reused, so external annotations can reference them
 stably.
 
-### Roadmap
+## Roadmap
 
 - **Observation overlays**: separate contributed layers (e.g.
   `Diagram:Foo/Observations/SomeUser` subpages) that reference a base
@@ -119,8 +117,9 @@ stably.
 - i18n for editor UI strings (currently English, in `Graph.js`)
 - Touch/mobile gesture support
 
-## The native prototype
+## History
 
-The original Rust + egui app (`cargo run`). Same data model; the canvas port
-in the extension follows its interactions (grid, middle-drag pan, right-click
-add, pinning).
+Inferences started as a native Rust + egui prototype; the canvas editor is a
+faithful port of its scene (adaptive power-of-two grid, right-click to add,
+pinning). The prototype lives in this repository's git history prior to the
+extension restructure.
