@@ -80,6 +80,20 @@ var pageApi = {
 			text: text,
 			summary: 'Edited from an Inferences diagram'
 		} );
+	},
+	render: function ( title ) {
+		return new mw.Api().get( {
+			action: 'parse',
+			page: title,
+			prop: 'text',
+			redirects: true,
+			disablelimitreport: true,
+			disableeditsection: true,
+			disabletoc: true,
+			formatversion: 2
+		} ).then( function ( res ) {
+			return ( res.parse && res.parse.text ) || '';
+		} );
 	}
 };
 
@@ -110,6 +124,7 @@ function initDiagramPage( container ) {
 			navigate: navigate,
 			isDark: wikiIsDark,
 			pageApi: pageApi,
+			renderPage: pageApi.render,
 			notify: notify,
 			onDirtyChange: function ( dirty ) {
 				if ( saveBtn ) {
@@ -198,7 +213,8 @@ function initEmbed( container ) {
 				editable: false,
 				resolveHref: resolveHref,
 				navigate: navigate,
-				isDark: wikiIsDark
+				isDark: wikiIsDark,
+				renderPage: pageApi.render
 			} );
 			store.attach( graph );
 			followWikiTheme( graph );

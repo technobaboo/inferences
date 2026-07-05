@@ -23,7 +23,7 @@
 	var Text = window.InferencesText;
 
 	var SAMPLE_WIKI = {
-		'Wayland client': '{{#inference:id=1|to=Compositor|tag=sends frames to|evidence1=https://wayland.freedesktop.org/docs/html/|snippet1=wl_surface.commit atomically applies pending state.}}\n[[Category:Programs]]\n',
+		'Wayland client': '{{#inference:id=1|to=Compositor|tag=sends frames to}}<ref>[https://wayland.freedesktop.org/docs/html/ wl_surface.commit atomically applies pending state.]</ref>\n\n== References ==\n<references />\n[[Category:Programs]]\n',
 		'Compositor': "A ''compositor'' combines surfaces.\n{{#inference:id=1|to=GPU driver|tag=depends on|inferred=yes}}\n[[Category:Programs]]\n",
 		'GPU driver': '',
 		// meta-edge: this page's inference #1 points at ANOTHER PAGE'S
@@ -351,6 +351,20 @@
 					persist();
 					return Promise.resolve();
 				}
+			},
+			renderPage: function ( title ) {
+				// no parser in the harness: show the raw source so the
+				// resizable article panel can still be exercised
+				var text = state.wiki[ title ];
+				if ( text === undefined ) {
+					return Promise.reject( new Error( 'missing page' ) );
+				}
+				var esc = String( text )
+					.replace( /&/g, '&amp;' )
+					.replace( /</g, '&lt;' )
+					.replace( />/g, '&gt;' );
+				return Promise.resolve(
+					'<pre style="white-space:pre-wrap;margin:0">' + esc + '</pre>' );
 			},
 			onDirtyChange: function ( dirty ) { saveBtn.disabled = !dirty; }
 		} );
