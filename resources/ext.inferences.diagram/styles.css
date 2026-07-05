@@ -327,6 +327,43 @@
 	font-style: italic;
 }
 
+/* Relationship cards that embed the source article get more room. */
+.inf-card-article {
+	width: 340px;
+}
+
+.inf-article {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.inf-article-panel {
+	resize: vertical;
+	overflow: auto;
+	height: 200px;
+	min-height: 60px;
+	max-height: 60vh;
+	border: 1px solid var( --inf-border );
+	border-radius: 4px;
+	background: var( --inf-bg );
+	padding: 8px 10px;
+}
+
+.inf-article-content {
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.inf-article-content p {
+	margin: 0 0 0.5em;
+}
+
+.inf-article-content img {
+	max-width: 100%;
+	height: auto;
+}
+
 .inf-page-editor {
 	display: flex;
 	flex-direction: column;

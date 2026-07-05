@@ -83,6 +83,9 @@
 	 * @param {Function} [options.navigate] called with (title) on view-mode node click
 	 * @param {Function} [options.isDark] page theme probe; default prefers-color-scheme
 	 * @param {Object} [options.pageApi] optional { load(title), save(title, text) }
+	 * @param {Function} [options.renderPage] title -> Promise<html>; when set,
+	 *   a relationship card shows the source article's rendered text in a
+	 *   resizable panel (auto-opened in view mode)
 	 * @param {Function} [options.notify] called with (message, isError)
 	 */
 	function Graph( container, options ) {
@@ -94,6 +97,7 @@
 		this.resolveHref = options.resolveHref || function () { return null; };
 		this.navigate = options.navigate || function () {};
 		this.pageApi = options.pageApi || null;
+		this.renderPage = options.renderPage || null;
 		this.notify = options.notify || function () {};
 		this.isDark = options.isDark || function () {
 			return window.matchMedia &&
@@ -270,11 +274,24 @@
 		visited = visited || {};
 		var a = this._anchorOf( rel.from, visited );
 		var b = this._anchorOf( rel.to, visited );
-		var h = this._relHandle( rel, visited );
+		// Derive the handle from the anchors we just resolved rather than
+		// re-resolving them through _relHandle: resolving rel.to has already
+		// marked it in `visited`, so a second resolution would hit the
+		// cycle-guard fallback and return a bogus handle for meta-edges.
+		var h = rel.hset ?
+			{ x: rel.hx, y: rel.hy } :
+			{ x: ( a.x + b.x ) / 2, y: ( a.y + b.y ) / 2 };
+		// Evaluate along the curve as it is actually drawn: from each
+		// endpoint's rim (not its centre) toward the handle. Keeping this in
+		// sync with _drawRelationships is what makes labels, meta-edge
+		// anchors and hit-testing land on the visible line even when the
+		// control point is dragged or an endpoint is another relationship.
+		var start = trimToRim( a, h.x, h.y );
+		var end = trimToRim( b, h.x, h.y );
 		var mt = 1 - t;
 		return {
-			x: mt * mt * a.x + 2 * mt * t * h.x + t * t * b.x,
-			y: mt * mt * a.y + 2 * mt * t * h.y + t * t * b.y
+			x: mt * mt * start.x + 2 * mt * t * h.x + t * t * end.x,
+			y: mt * mt * start.y + 2 * mt * t * h.y + t * t * end.y
 		};
 	};
 
@@ -1220,6 +1237,10 @@
 		var stored = el( 'div', 'inf-muted', body );
 		stored.textContent = 'Stored on "' + card.id.split( '#' )[ 0 ] + '"';
 
+		// the article this relationship lives in, as rendered wiki text —
+		// auto-opened when just reading the diagram, on demand while editing
+		this._buildArticlePanel( card, body, card.id.split( '#' )[ 0 ], !this.editable );
+
 		// tag picker
 		var select = el( 'select', 'inf-input', body );
 		select.disabled = !this.editable;
@@ -1263,17 +1284,18 @@
 			self._storeCall( self.store.updateEdge( card.id, { inferred: infBox.checked } ) );
 		} );
 
-		// evidence
+		// evidence — each item is a <ref> citation on the source page,
+		// rendered by the wiki's built-in citation system
 		var evTitle = el( 'div', 'inf-section-title', body );
-		evTitle.textContent = 'Evidence';
+		evTitle.textContent = 'Citations';
 		var evList = el( 'div', 'inf-evidence', body );
 		var evidence = rel.evidence.map( function ( ev ) {
-			return { source: ev.source, snippet: ev.snippet };
+			return typeof ev === 'string' ? ev : '';
 		} );
 		function pushEvidence() {
 			self._storeCall( self.store.updateEdge( card.id, {
 				evidence: evidence.filter( function ( ev ) {
-					return ev.source || ev.snippet;
+					return ev.trim() !== '';
 				} )
 			} ) );
 		}
@@ -1281,33 +1303,22 @@
 			evList.textContent = '';
 			evidence.forEach( function ( ev, i ) {
 				var row = el( 'div', 'inf-evidence-item', evList );
-				var source = el( 'input', 'inf-input', row );
-				source.placeholder = 'source (url or page)';
-				source.value = ev.source;
-				source.readOnly = !self.editable;
-				source.addEventListener( 'change', function () {
-					ev.source = source.value;
+				var cite = el( 'textarea', 'inf-input', row );
+				cite.placeholder = 'citation wikitext — e.g. [https://… quote] or {{cite web|…}}';
+				cite.rows = 2;
+				cite.value = ev;
+				cite.readOnly = !self.editable;
+				cite.addEventListener( 'change', function () {
+					evidence[ i ] = cite.value;
 					pushEvidence();
 				} );
-				source.addEventListener( 'keydown', function ( e ) {
-					e.stopPropagation();
-				} );
-				var snippet = el( 'textarea', 'inf-input', row );
-				snippet.placeholder = 'snippet';
-				snippet.rows = 2;
-				snippet.value = ev.snippet;
-				snippet.readOnly = !self.editable;
-				snippet.addEventListener( 'change', function () {
-					ev.snippet = snippet.value;
-					pushEvidence();
-				} );
-				snippet.addEventListener( 'keydown', function ( e ) {
+				cite.addEventListener( 'keydown', function ( e ) {
 					e.stopPropagation();
 				} );
 				if ( self.editable ) {
 					var rm = el( 'button', 'inf-icon-btn', row );
 					rm.type = 'button';
-					rm.title = 'Remove evidence';
+					rm.title = 'Remove citation';
 					rm.textContent = '×';
 					rm.addEventListener( 'click', function () {
 						evidence.splice( i, 1 );
@@ -1318,16 +1329,16 @@
 			} );
 			if ( !evidence.length && !self.editable ) {
 				var empty = el( 'div', 'inf-muted', evList );
-				empty.textContent = 'No evidence recorded yet.';
+				empty.textContent = 'No citations recorded yet.';
 			}
 		}
 		renderEvidence();
 		if ( this.editable ) {
 			var add = el( 'button', 'inf-btn', body );
 			add.type = 'button';
-			add.textContent = '+ add evidence';
+			add.textContent = '+ add citation';
 			add.addEventListener( 'click', function () {
-				evidence.push( { source: '', snippet: '' } );
+				evidence.push( '' );
 				renderEvidence();
 			} );
 
@@ -1338,6 +1349,63 @@
 			del.addEventListener( 'click', function () {
 				self._storeCall( self.store.removeEdge( card.id ) );
 			} );
+		}
+	};
+
+	/**
+	 * A resizable panel showing a page's rendered wiki text inside a card.
+	 * Only built when a renderPage hook is available; opened immediately
+	 * when `autoOpen` (view mode), otherwise behind a toggle button.
+	 */
+	Graph.prototype._buildArticlePanel = function ( card, body, title, autoOpen ) {
+		var self = this;
+		if ( !this.renderPage ) {
+			return;
+		}
+		card.el.classList.add( 'inf-card-article' );
+		var section = el( 'div', 'inf-article', body );
+		var toggle = el( 'button', 'inf-btn', section );
+		toggle.type = 'button';
+		var panel = null;
+		function open() {
+			if ( panel ) {
+				return;
+			}
+			toggle.textContent = 'Hide article';
+			panel = el( 'div', 'inf-article-panel', section );
+			var status = el( 'div', 'inf-muted', panel );
+			status.textContent = 'Loading "' + title + '"…';
+			self.renderPage( title ).then( function ( html ) {
+				if ( !panel ) {
+					return;
+				}
+				panel.textContent = '';
+				var content = el( 'div', 'inf-article-content mw-parser-output', panel );
+				content.innerHTML = html || '';
+			}, function () {
+				if ( panel ) {
+					status.textContent = 'Could not load "' + title + '".';
+				}
+			} );
+		}
+		function close() {
+			if ( panel ) {
+				panel.remove();
+				panel = null;
+			}
+			toggle.textContent = 'Show article';
+		}
+		toggle.addEventListener( 'click', function () {
+			if ( panel ) {
+				close();
+			} else {
+				open();
+			}
+		} );
+		if ( autoOpen ) {
+			open();
+		} else {
+			close();
 		}
 	};
 
@@ -1525,16 +1593,6 @@
 				ctx.restore();
 			}
 		} );
-
-		function trimToRim( anchor, cx, cy ) {
-			var dx = cx - anchor.x;
-			var dy = cy - anchor.y;
-			var len = Math.hypot( dx, dy ) || 1;
-			return {
-				x: anchor.x + dx / len * anchor.r,
-				y: anchor.y + dy / len * anchor.r
-			};
-		}
 	};
 
 	Graph.prototype._drawThings = function ( ctx, zoom ) {
@@ -1655,6 +1713,17 @@
 			lines[ lines.length - 1 ] = last + '…';
 		}
 		return lines;
+	}
+
+	/** Point on the rim of `anchor` (centre + radius) pointing toward cx,cy. */
+	function trimToRim( anchor, cx, cy ) {
+		var dx = cx - anchor.x;
+		var dy = cy - anchor.y;
+		var len = Math.hypot( dx, dy ) || 1;
+		return {
+			x: anchor.x + dx / len * anchor.r,
+			y: anchor.y + dy / len * anchor.r
+		};
 	}
 
 	function roundRect( ctx, x, y, w, h, r ) {

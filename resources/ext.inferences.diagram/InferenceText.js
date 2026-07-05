@@ -3,12 +3,16 @@
  * dependencies. Everything the canvas writes into articles goes through
  * here, so the exact syntax lives in one place:
  *
- *   {{#inference:id=1|to=Compositor|tag=talks to|inferred=yes
- *     |evidence1=https://…|snippet1=…}}
+ *   {{#inference:id=1|to=Compositor|tag=talks to|inferred=yes}}<ref>…</ref>
+ *
  *   [[Category:Programs]]
  *
- * Values are escaped with {{!}} for "|" so tags/evidence can contain
- * pipes; the extension always writes single-line canonical calls.
+ * Evidence uses the wiki's built-in citation system: <ref>…</ref> tags are
+ * glued to the call and belong to the relationship. Param values are
+ * escaped with {{!}} for "|" so tags can contain pipes; the extension
+ * always writes single-line canonical calls, separated by a blank line so
+ * each renders as its own paragraph. Legacy evidenceN/snippetN params are
+ * still read and migrated to <ref> the next time a call is written.
  */
 ( function ( root, factory ) {
 	if ( typeof module !== 'undefined' && module.exports ) {
@@ -33,6 +37,67 @@
 
 	function unescapeValue( value ) {
 		return String( value ).replace( /\{\{!\}\}/g, '|' ).trim();
+	}
+
+	/**
+	 * Read <ref>…</ref> citations glued to the end of an inference call.
+	 * Ref bodies are collected into `evidence`; returns the index just past
+	 * the last consumed ref (or `pos` if there are none). A blank line
+	 * between the call and a ref detaches it, so only citations that belong
+	 * to the relationship are captured.
+	 */
+	function readRefs( wikitext, pos, evidence ) {
+		var re = /^[ \t]*\n?[ \t]*<ref(?:\s[^>]*)?>([\s\S]*?)<\/ref>/;
+		var end = pos;
+		var match;
+		while ( ( match = re.exec( wikitext.slice( end ) ) ) !== null ) {
+			evidence.push( match[ 1 ].trim() );
+			end += match[ 0 ].length;
+		}
+		return end;
+	}
+
+	/** Turn a legacy evidence/snippet pair into citation wikitext. */
+	function legacyCitation( source, snippet ) {
+		source = String( source === undefined ? '' : source ).trim();
+		snippet = String( snippet === undefined ? '' : snippet ).trim();
+		if ( !source && !snippet ) {
+			return '';
+		}
+		if ( /^https?:\/\//i.test( source ) ) {
+			return snippet ? '[' + source + ' ' + snippet + ']' : source;
+		}
+		if ( source && snippet ) {
+			return snippet + ' — ' + source;
+		}
+		return source || snippet;
+	}
+
+	/**
+	 * Ensure a page that carries <ref> citations also has somewhere for
+	 * them to render. No-op when there are no refs or a references list
+	 * already exists; otherwise appends a References section (before the
+	 * category links, by convention).
+	 */
+	function ensureReferences( wikitext ) {
+		if ( !/<ref[\s>]/.test( wikitext ) ) {
+			return wikitext;
+		}
+		if ( /<references|\{\{\s*(?:reflist|references)\b/i.test( wikitext ) ) {
+			return wikitext;
+		}
+		var block = '== References ==\n<references />\n';
+		CATEGORY_RE.lastIndex = 0;
+		var cat = CATEGORY_RE.exec( wikitext );
+		if ( cat ) {
+			var before = wikitext.slice( 0, cat.index );
+			var lead = before.endsWith( '\n\n' ) ? '' :
+				( before.endsWith( '\n' ) ? '\n' : '\n\n' );
+			return before + lead + block + '\n' + wikitext.slice( cat.index );
+		}
+		var sep = wikitext === '' ? '' :
+			( wikitext.endsWith( '\n' ) ? '\n' : '\n\n' );
+		return wikitext + sep + block;
 	}
 
 	/** Deterministic mid-tone color from a name, same on every client. */
@@ -72,13 +137,16 @@
 					params[ part.slice( 0, eq ).trim() ] = unescapeValue( part.slice( eq + 1 ) );
 				}
 			} );
+			// Citations: <ref>…</ref> tags glued to the call, plus any legacy
+			// evidenceN/snippetN params (migrated to <ref> on next write).
 			var evidence = [];
+			var refEnd = readRefs( wikitext, match.index + match[ 0 ].length, evidence );
 			for ( var i = 1; params[ 'evidence' + i ] !== undefined ||
 				params[ 'snippet' + i ] !== undefined; i++ ) {
-				evidence.push( {
-					source: params[ 'evidence' + i ] || '',
-					snippet: params[ 'snippet' + i ] || ''
-				} );
+				var legacy = legacyCitation( params[ 'evidence' + i ], params[ 'snippet' + i ] );
+				if ( legacy ) {
+					evidence.push( legacy );
+				}
 			}
 			out.push( {
 				id: params.id || String( out.length + 1 ),
@@ -88,8 +156,9 @@
 				inferred: params.inferred === 'yes',
 				evidence: evidence,
 				start: match.index,
-				end: match.index + match[ 0 ].length
+				end: refEnd
 			} );
+			CALL_RE.lastIndex = refEnd;
 		}
 		return out;
 	}
@@ -107,13 +176,17 @@
 		if ( entry.inferred ) {
 			parts.push( 'inferred=yes' );
 		}
-		( entry.evidence || [] ).forEach( function ( ev, i ) {
-			if ( ev.source || ev.snippet ) {
-				parts.push( 'evidence' + ( i + 1 ) + '=' + escapeValue( ev.source ) );
-				parts.push( 'snippet' + ( i + 1 ) + '=' + escapeValue( ev.snippet ) );
+		var call = '{{#inference:' + parts.join( '|' ) + '}}';
+		// Evidence uses the built-in citation system: each item becomes a
+		// <ref> glued to the call so it renders as a footnote on the page.
+		( entry.evidence || [] ).forEach( function ( ev ) {
+			var body = typeof ev === 'string' ?
+				ev.trim() : legacyCitation( ev && ev.source, ev && ev.snippet );
+			if ( body ) {
+				call += '<ref>' + body + '</ref>';
 			}
 		} );
-		return '{{#inference:' + parts.join( '|' ) + '}}';
+		return call;
 	}
 
 	/** Smallest unused numeric id among the page's calls. */
@@ -135,16 +208,25 @@
 			return e.id === entry.id;
 		} );
 		if ( existing ) {
-			return wikitext.slice( 0, existing.start ) + call + wikitext.slice( existing.end );
+			return ensureReferences(
+				wikitext.slice( 0, existing.start ) + call + wikitext.slice( existing.end ) );
 		}
-		// insert before the first category link, else append
+		// Insert before the first category link, else append — separated
+		// from surrounding content by a blank line so each relationship
+		// renders as its own paragraph (chip on its own line) instead of
+		// running together with the next.
 		CATEGORY_RE.lastIndex = 0;
 		var cat = CATEGORY_RE.exec( wikitext );
 		if ( cat ) {
-			return wikitext.slice( 0, cat.index ) + call + '\n' + wikitext.slice( cat.index );
+			var before = wikitext.slice( 0, cat.index );
+			var lead = before === '' ? '' :
+				( before.endsWith( '\n\n' ) ? '' : ( before.endsWith( '\n' ) ? '\n' : '\n\n' ) );
+			return ensureReferences(
+				before + lead + call + '\n\n' + wikitext.slice( cat.index ) );
 		}
-		var sep = wikitext === '' ? '' : ( wikitext.endsWith( '\n' ) ? '' : '\n' );
-		return wikitext + sep + call + '\n';
+		var sep = wikitext === '' ? '' :
+			( wikitext.endsWith( '\n\n' ) ? '' : ( wikitext.endsWith( '\n' ) ? '\n' : '\n\n' ) );
+		return ensureReferences( wikitext + sep + call + '\n' );
 	}
 
 	function remove( wikitext, id ) {
@@ -154,7 +236,12 @@
 		if ( !existing ) {
 			return wikitext;
 		}
+		// Drop the call (and its citations) plus the trailing newline and
+		// the blank-line separator we inserted, if present.
 		var end = existing.end;
+		if ( wikitext[ end ] === '\n' ) {
+			end++;
+		}
 		if ( wikitext[ end ] === '\n' ) {
 			end++;
 		}

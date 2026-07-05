@@ -31,8 +31,7 @@ class Hooks implements ParserFirstCallInitHook {
 	}
 
 	/**
-	 * {{#inference: id=1 |to=Compositor |tag=talks to |inferred=yes
-	 *   |evidence1=https://… |snippet1=…}}
+	 * {{#inference: id=1 |to=Compositor |tag=talks to |inferred=yes}}
 	 *
 	 * A relationship from the page this call sits on (or from one of the
 	 * page's own inferences, via from=#id) to another page or inference
@@ -40,19 +39,16 @@ class Hooks implements ParserFirstCallInitHook {
 	 * all of the page's inferences into the 'inferences' page property so
 	 * they are queryable via prop=pageprops.
 	 *
+	 * Evidence uses the wiki's built-in citation system: <ref>…</ref> tags
+	 * placed right after the call render as footnotes and are handled by the
+	 * Cite extension, so nothing citation-related lives in this function.
+	 *
 	 * @param Parser $parser
 	 * @param string ...$args
 	 * @return array
 	 */
 	public static function renderInference( Parser $parser, ...$args ) {
 		$params = self::extractParams( $args );
-		$evidence = [];
-		for ( $i = 1; isset( $params[ 'evidence' . $i ] ) || isset( $params[ 'snippet' . $i ] ); $i++ ) {
-			$evidence[] = [
-				'source' => $params[ 'evidence' . $i ] ?? '',
-				'snippet' => $params[ 'snippet' . $i ] ?? '',
-			];
-		}
 		$output = $parser->getOutput();
 		$list = json_decode( $output->getPageProperty( 'inferences' ) ?? '[]', true ) ?: [];
 		$entry = [
@@ -61,7 +57,6 @@ class Hooks implements ParserFirstCallInitHook {
 			'to' => $params['to'] ?? '',
 			'tag' => $params['tag'] ?? '',
 			'inferred' => ( $params['inferred'] ?? '' ) === 'yes',
-			'evidence' => $evidence,
 		];
 		$list[] = $entry;
 		$output->setPageProperty( 'inferences', json_encode( $list ) );

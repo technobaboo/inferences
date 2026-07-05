@@ -16,7 +16,8 @@ editor for its own document format:
   edge's label pill.
 - Relationships can be marked **inferred** (`inferred=yes` — deduced, not
   directly observed), drawn dashed with a "∴" marker, and carry
-  **evidence** (source + snippet pairs).
+  **evidence** as ordinary `<ref>…</ref>` citations placed right after the
+  call — rendered as footnotes by the wiki's built-in citation system.
 - A thing's **type** is a category: typing something as "Programs" adds
   `[[Category:Programs]]` to its page. A category becomes a type by
   carrying `{{#inferencetype: color=#46a758}}` on its category page (the
@@ -95,7 +96,7 @@ To put a diagram on your Main Page (or any article):
 | drag the diamond | reshape a selected edge (layout) |
 | Delete | edge: remove the inference call; thing: remove from view |
 
-Semantic edits (connect, tag, inferred, evidence, type, rename, create)
+Semantic edits (connect, tag, inferred, citations, type, rename, create)
 apply to the pages **immediately**. Layout changes are batched behind the
 **Save layout** button and go to the Diagram page. To undo a semantic
 edit, use the page's history like any wiki edit.
@@ -114,10 +115,19 @@ Everything the canvas writes is plain, hand-editable syntax:
 
 ```wikitext
 A Wayland client application.
-{{#inference:id=1|to=Compositor|tag=talks to|inferred=yes
-  |evidence1=https://wayland.freedesktop.org/docs/html/|snippet1=wl_surface.commit is atomic.}}
+
+{{#inference:id=1|to=Compositor|tag=talks to|inferred=yes}}<ref>[https://wayland.freedesktop.org/docs/html/ wl_surface.commit is atomic.]</ref>
+
+== References ==
+<references />
 [[Category:Wayland]]
 ```
+
+Evidence is expressed with the wiki's built-in citation system: each
+`<ref>…</ref>` glued to a call renders as a footnote (the canvas adds a
+`<references />` section automatically the first time a page gains one).
+Consecutive relationships are separated by a blank line so each chip
+renders on its own paragraph.
 
 `id` is stable per page and never reused, so `Page#id` references stay
 valid; `to=`/`from=` accept `Title`, `Title#id`, or `#id` (an inference on
