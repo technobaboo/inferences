@@ -126,6 +126,9 @@ A Wayland client application.
 Evidence is expressed with the wiki's built-in citation system: each
 `<ref>…</ref>` glued to a call renders as a footnote (the canvas adds a
 `<references />` section automatically the first time a page gains one).
+The relationship card edits citations visually — pick a citation type
+(web, news, book, journal) to fill out the matching `{{cite …}}` fields,
+or choose **Free wikitext** for a bare URL, quote, or any other template.
 Consecutive relationships are separated by a blank line so each chip
 renders on its own paragraph.
 

@@ -53,6 +53,133 @@
 	// impossible page title (titles can't start with a space)
 	var PENDING = ' pending';
 
+	// Structured citation types for the visual editor. Each maps to a
+	// MediaWiki {{cite …}} template; anything that doesn't match one of
+	// these is edited as free wikitext ('custom').
+	var CITATION_TYPES = [
+		{ id: 'web', template: 'cite web', label: 'Web page', fields: [
+			{ key: 'url', label: 'URL' },
+			{ key: 'title', label: 'Title' },
+			{ key: 'website', label: 'Website / publisher' },
+			{ key: 'author', label: 'Author' },
+			{ key: 'date', label: 'Date' },
+			{ key: 'access-date', label: 'Accessed' },
+			{ key: 'quote', label: 'Quote', multiline: true }
+		] },
+		{ id: 'news', template: 'cite news', label: 'News article', fields: [
+			{ key: 'url', label: 'URL' },
+			{ key: 'title', label: 'Title' },
+			{ key: 'work', label: 'Publication' },
+			{ key: 'author', label: 'Author' },
+			{ key: 'date', label: 'Date' },
+			{ key: 'quote', label: 'Quote', multiline: true }
+		] },
+		{ id: 'book', template: 'cite book', label: 'Book', fields: [
+			{ key: 'title', label: 'Title' },
+			{ key: 'author', label: 'Author' },
+			{ key: 'publisher', label: 'Publisher' },
+			{ key: 'year', label: 'Year' },
+			{ key: 'isbn', label: 'ISBN' },
+			{ key: 'page', label: 'Page(s)' },
+			{ key: 'quote', label: 'Quote', multiline: true }
+		] },
+		{ id: 'journal', template: 'cite journal', label: 'Journal article', fields: [
+			{ key: 'title', label: 'Title' },
+			{ key: 'author', label: 'Author' },
+			{ key: 'journal', label: 'Journal' },
+			{ key: 'volume', label: 'Volume' },
+			{ key: 'issue', label: 'Issue' },
+			{ key: 'year', label: 'Year' },
+			{ key: 'pages', label: 'Pages' },
+			{ key: 'doi', label: 'DOI' },
+			{ key: 'quote', label: 'Quote', multiline: true }
+		] }
+	];
+
+	function citeTypeById( id ) {
+		for ( var i = 0; i < CITATION_TYPES.length; i++ ) {
+			if ( CITATION_TYPES[ i ].id === id ) {
+				return CITATION_TYPES[ i ];
+			}
+		}
+		return null;
+	}
+
+	/** Split a template body on top-level "|", ignoring nested {{}} / [[]]. */
+	function splitTemplateParams( str ) {
+		var parts = [];
+		var cur = '';
+		var depth = 0;
+		for ( var i = 0; i < str.length; i++ ) {
+			var pair = str.substr( i, 2 );
+			if ( pair === '{{' || pair === '[[' ) {
+				depth++;
+				cur += pair;
+				i++;
+			} else if ( pair === '}}' || pair === ']]' ) {
+				depth = Math.max( 0, depth - 1 );
+				cur += pair;
+				i++;
+			} else if ( str[ i ] === '|' && depth === 0 ) {
+				parts.push( cur );
+				cur = '';
+			} else {
+				cur += str[ i ];
+			}
+		}
+		parts.push( cur );
+		return parts;
+	}
+
+	/**
+	 * Parse a stored citation body into {type, fields, raw}. A recognised
+	 * {{cite …}} template becomes a typed form; everything else is 'custom'.
+	 */
+	function parseCitation( body ) {
+		var raw = String( body == null ? '' : body ).trim();
+		var match = /^\{\{\s*(cite\s+[a-z]+)\s*((?:\|[\s\S]*)?)\}\}$/i.exec( raw );
+		if ( match ) {
+			var template = match[ 1 ].toLowerCase().replace( /\s+/g, ' ' );
+			for ( var i = 0; i < CITATION_TYPES.length; i++ ) {
+				if ( CITATION_TYPES[ i ].template === template ) {
+					var fields = {};
+					splitTemplateParams( match[ 2 ] ).forEach( function ( part ) {
+						var eq = part.indexOf( '=' );
+						if ( eq !== -1 ) {
+							fields[ part.slice( 0, eq ).trim() ] =
+								part.slice( eq + 1 ).replace( /\{\{!\}\}/g, '|' ).trim();
+						}
+					} );
+					return { type: CITATION_TYPES[ i ].id, fields: fields, raw: raw };
+				}
+			}
+		}
+		return { type: 'custom', fields: {}, raw: raw };
+	}
+
+	/** Serialize a {type, fields, raw} citation back to wikitext. */
+	function serializeCitation( state ) {
+		if ( !state || state.type === 'custom' || !state.type ) {
+			return String( ( state && state.raw ) || '' ).trim();
+		}
+		var type = citeTypeById( state.type );
+		if ( !type ) {
+			return String( state.raw || '' ).trim();
+		}
+		var parts = [];
+		type.fields.forEach( function ( field ) {
+			var value = state.fields && state.fields[ field.key ];
+			value = value == null ? '' : String( value ).replace( /\r?\n+/g, ' ' ).trim();
+			if ( value !== '' ) {
+				parts.push( field.key + '=' + value.replace( /\|/g, '{{!}}' ) );
+			}
+		} );
+		if ( !parts.length ) {
+			return '';
+		}
+		return '{{' + type.template + '|' + parts.join( '|' ) + '}}';
+	}
+
 	function clamp( v, lo, hi ) {
 		return v < lo ? lo : ( v > hi ? hi : v );
 	}
@@ -1285,49 +1412,32 @@
 		} );
 
 		// evidence — each item is a <ref> citation on the source page,
-		// rendered by the wiki's built-in citation system
+		// rendered by the wiki's built-in citation system. The editor parses
+		// each stored ref body into a structured form (a {{cite …}} template
+		// picked from a dropdown, or free wikitext) and serializes it back.
 		var evTitle = el( 'div', 'inf-section-title', body );
 		evTitle.textContent = 'Citations';
 		var evList = el( 'div', 'inf-evidence', body );
-		var evidence = rel.evidence.map( function ( ev ) {
-			return typeof ev === 'string' ? ev : '';
+		var citeStates = rel.evidence.map( function ( ev ) {
+			return parseCitation( typeof ev === 'string' ? ev : '' );
 		} );
 		function pushEvidence() {
 			self._storeCall( self.store.updateEdge( card.id, {
-				evidence: evidence.filter( function ( ev ) {
-					return ev.trim() !== '';
+				evidence: citeStates.map( serializeCitation ).filter( function ( body ) {
+					return body.trim() !== '';
 				} )
 			} ) );
 		}
 		function renderEvidence() {
 			evList.textContent = '';
-			evidence.forEach( function ( ev, i ) {
-				var row = el( 'div', 'inf-evidence-item', evList );
-				var cite = el( 'textarea', 'inf-input', row );
-				cite.placeholder = 'citation wikitext — e.g. [https://… quote] or {{cite web|…}}';
-				cite.rows = 2;
-				cite.value = ev;
-				cite.readOnly = !self.editable;
-				cite.addEventListener( 'change', function () {
-					evidence[ i ] = cite.value;
+			citeStates.forEach( function ( state, i ) {
+				self._buildCitationEditor( evList, state, pushEvidence, function remove() {
+					citeStates.splice( i, 1 );
+					renderEvidence();
 					pushEvidence();
 				} );
-				cite.addEventListener( 'keydown', function ( e ) {
-					e.stopPropagation();
-				} );
-				if ( self.editable ) {
-					var rm = el( 'button', 'inf-icon-btn', row );
-					rm.type = 'button';
-					rm.title = 'Remove citation';
-					rm.textContent = '×';
-					rm.addEventListener( 'click', function () {
-						evidence.splice( i, 1 );
-						renderEvidence();
-						pushEvidence();
-					} );
-				}
 			} );
-			if ( !evidence.length && !self.editable ) {
+			if ( !citeStates.length && !self.editable ) {
 				var empty = el( 'div', 'inf-muted', evList );
 				empty.textContent = 'No citations recorded yet.';
 			}
@@ -1338,7 +1448,7 @@
 			add.type = 'button';
 			add.textContent = '+ add citation';
 			add.addEventListener( 'click', function () {
-				evidence.push( '' );
+				citeStates.push( { type: CITATION_TYPES[ 0 ].id, fields: {}, raw: '' } );
 				renderEvidence();
 			} );
 
@@ -1349,6 +1459,94 @@
 			del.addEventListener( 'click', function () {
 				self._storeCall( self.store.removeEdge( card.id ) );
 			} );
+		}
+	};
+
+	/**
+	 * One citation row: a type dropdown ({{cite web}}, book, journal, news,
+	 * or free wikitext) and the fields for the chosen type. `state` is a
+	 * {type, fields, raw} object mutated in place; onChange persists, remove
+	 * drops the row. In view mode everything is shown read-only.
+	 */
+	Graph.prototype._buildCitationEditor = function ( container, state, onChange, remove ) {
+		var self = this;
+		var row = el( 'div', 'inf-evidence-item', container );
+
+		var typeSel = el( 'select', 'inf-input inf-cite-type', row );
+		CITATION_TYPES.forEach( function ( type ) {
+			var opt = el( 'option', null, typeSel );
+			opt.value = type.id;
+			opt.textContent = type.label;
+		} );
+		var customOpt = el( 'option', null, typeSel );
+		customOpt.value = 'custom';
+		customOpt.textContent = 'Free wikitext';
+		typeSel.value = state.type;
+		typeSel.disabled = !this.editable;
+
+		var fieldsWrap = el( 'div', 'inf-cite-fields', row );
+
+		function stopKeys( e ) {
+			e.stopPropagation();
+		}
+
+		function renderFields() {
+			fieldsWrap.textContent = '';
+			if ( state.type === 'custom' ) {
+				var ta = el( 'textarea', 'inf-input', fieldsWrap );
+				ta.placeholder = 'citation wikitext — e.g. [https://… quote] or any {{template}}';
+				ta.rows = 2;
+				ta.value = state.raw || '';
+				ta.readOnly = !self.editable;
+				ta.addEventListener( 'change', function () {
+					state.raw = ta.value;
+					onChange();
+				} );
+				ta.addEventListener( 'keydown', stopKeys );
+				return;
+			}
+			citeTypeById( state.type ).fields.forEach( function ( field ) {
+				var wrap = el( 'label', 'inf-cite-field', fieldsWrap );
+				var label = el( 'span', 'inf-cite-label', wrap );
+				label.textContent = field.label;
+				var input = el( field.multiline ? 'textarea' : 'input', 'inf-input', wrap );
+				if ( field.multiline ) {
+					input.rows = 2;
+				}
+				input.value = ( state.fields && state.fields[ field.key ] ) || '';
+				input.readOnly = !self.editable;
+				input.addEventListener( 'change', function () {
+					if ( !state.fields ) {
+						state.fields = {};
+					}
+					state.fields[ field.key ] = input.value;
+					onChange();
+				} );
+				input.addEventListener( 'keydown', stopKeys );
+			} );
+		}
+
+		typeSel.addEventListener( 'change', function () {
+			state.type = typeSel.value;
+			if ( !state.fields ) {
+				state.fields = {};
+			}
+			renderFields();
+			// Persist the new type only once there is something to store —
+			// otherwise an empty citation would be filtered out on save and
+			// the card would rebuild without this in-progress row.
+			if ( serializeCitation( state ).trim() !== '' ) {
+				onChange();
+			}
+		} );
+		renderFields();
+
+		if ( this.editable ) {
+			var rm = el( 'button', 'inf-icon-btn', row );
+			rm.type = 'button';
+			rm.title = 'Remove citation';
+			rm.textContent = '×';
+			rm.addEventListener( 'click', remove );
 		}
 	};
 
@@ -1737,5 +1935,8 @@
 	}
 
 	Graph.PENDING = PENDING;
+	Graph.CITATION_TYPES = CITATION_TYPES;
+	Graph.parseCitation = parseCitation;
+	Graph.serializeCitation = serializeCitation;
 	return Graph;
 } ) );

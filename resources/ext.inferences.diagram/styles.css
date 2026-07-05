@@ -322,6 +322,29 @@
 	right: 4px;
 }
 
+.inf-cite-type {
+	margin-bottom: 2px;
+}
+
+.inf-cite-fields {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.inf-cite-field {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.inf-cite-label {
+	font-size: 10px;
+	color: var( --inf-muted );
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
 .inf-muted {
 	color: var( --inf-muted );
 	font-style: italic;
