@@ -123,7 +123,7 @@
 
 	/**
 	 * All inference calls in a page's wikitext.
-	 * @return {Array} entries {id, from, to, tag, inferred, evidence[], start, end}
+	 * @return {Array} entries {id, from, to, tag, context, inferred, evidence[], start, end}
 	 */
 	function parse( wikitext ) {
 		var out = [];
@@ -153,6 +153,7 @@
 				from: params.from || '',
 				to: params.to || '',
 				tag: params.tag || '',
+				context: params.context || '',
 				inferred: params.inferred === 'yes',
 				evidence: evidence,
 				start: match.index,
@@ -172,6 +173,9 @@
 		parts.push( 'to=' + escapeValue( entry.to ) );
 		if ( entry.tag ) {
 			parts.push( 'tag=' + escapeValue( entry.tag ) );
+		}
+		if ( entry.context ) {
+			parts.push( 'context=' + escapeValue( entry.context ) );
 		}
 		if ( entry.inferred ) {
 			parts.push( 'inferred=yes' );

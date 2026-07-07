@@ -328,6 +328,7 @@
 					from: resolve( entry.from ),
 					to: resolve( entry.to ),
 					tag: entry.tag,
+					context: entry.context,
 					inferred: entry.inferred,
 					evidence: entry.evidence
 				};
@@ -363,6 +364,7 @@
 				to: c.to,
 				tag: c.tag,
 				tagColor: Text.hashColor( c.tag ),
+				context: c.context,
 				inferred: c.inferred,
 				evidence: c.evidence,
 				hx: Number( layout.hx ) || 0,
@@ -505,6 +507,7 @@
 				to: to,
 				tag: entry.tag,
 				tagColor: Text.hashColor( entry.tag ),
+				context: entry.context,
 				inferred: entry.inferred,
 				evidence: entry.evidence,
 				hx: 0,
@@ -653,6 +656,7 @@
 			from: this._refFor( fromId, sourcePage ),
 			to: this._refFor( toId, sourcePage ),
 			tag: tag || '',
+			context: '',
 			inferred: false,
 			evidence: []
 		};
@@ -667,6 +671,7 @@
 				to: toId,
 				tag: tag || '',
 				tagColor: Text.hashColor( tag || '' ),
+				context: '',
 				inferred: false,
 				evidence: [],
 				hx: 0,
@@ -696,6 +701,7 @@
 			from: this._refFor( rel.from, sourcePage ),
 			to: this._refFor( rel.to, sourcePage ),
 			tag: 'tag' in changes ? changes.tag : rel.tag,
+			context: 'context' in changes ? changes.context : rel.context,
 			inferred: 'inferred' in changes ? changes.inferred : rel.inferred,
 			evidence: 'evidence' in changes ? changes.evidence : rel.evidence
 		};
@@ -704,6 +710,7 @@
 			.then( function () {
 				rel.tag = entry.tag;
 				rel.tagColor = Text.hashColor( entry.tag );
+				rel.context = entry.context;
 				rel.inferred = entry.inferred;
 				rel.evidence = entry.evidence;
 				if ( entry.tag && self.tags.indexOf( entry.tag ) === -1 ) {

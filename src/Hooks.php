@@ -31,13 +31,15 @@ class Hooks implements ParserFirstCallInitHook {
 	}
 
 	/**
-	 * {{#inference: id=1 |to=Compositor |tag=talks to |inferred=yes}}
+	 * {{#inference: id=1 |to=Compositor |tag=talks to |context=only over TCP |inferred=yes}}
 	 *
 	 * A relationship from the page this call sits on (or from one of the
 	 * page's own inferences, via from=#id) to another page or inference
-	 * (to=Title or to=Title#id). Renders an inline chip and accumulates
-	 * all of the page's inferences into the 'inferences' page property so
-	 * they are queryable via prop=pageprops.
+	 * (to=Title or to=Title#id). The optional context= qualifies this
+	 * specific instance of the relationship (the conditions under which it
+	 * holds). Renders an inline chip and accumulates all of the page's
+	 * inferences into the 'inferences' page property so they are queryable
+	 * via prop=pageprops.
 	 *
 	 * Evidence uses the wiki's built-in citation system: <ref>…</ref> tags
 	 * placed right after the call render as footnotes and are handled by the
@@ -56,6 +58,7 @@ class Hooks implements ParserFirstCallInitHook {
 			'from' => $params['from'] ?? '',
 			'to' => $params['to'] ?? '',
 			'tag' => $params['tag'] ?? '',
+			'context' => $params['context'] ?? '',
 			'inferred' => ( $params['inferred'] ?? '' ) === 'yes',
 		];
 		$list[] = $entry;
@@ -72,8 +75,10 @@ class Hooks implements ParserFirstCallInitHook {
 		$targetPart = $targetPage === '' ?
 			'§' . substr( $to, 1 ) :
 			'[[:' . $targetPage . '|' . $targetPage . $suffix . ']]';
+		$contextPart = $entry['context'] !== '' ?
+			' <span class="inf-context">(' . $entry['context'] . ')</span>' : '';
 		$wikitext = '<span class="inf-inline">' . $therefore . '→ ' .
-			$tagPart . $targetPart . '</span>';
+			$tagPart . $targetPart . $contextPart . '</span>';
 		return [ $wikitext, 'noparse' => false ];
 	}
 
