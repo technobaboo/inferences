@@ -1400,6 +1400,21 @@
 			self._storeCall( self.store.updateEdge( card.id, { tag: value } ) );
 		} );
 
+		// context: qualifies this specific instance — the conditions under
+		// which the relationship holds (free text, stored as context=…)
+		var ctxTitle = el( 'div', 'inf-section-title', body );
+		ctxTitle.textContent = 'Context';
+		var ctxInput = el( 'input', 'inf-input', body );
+		ctxInput.placeholder = 'only under these conditions…';
+		ctxInput.value = rel.context || '';
+		ctxInput.readOnly = !this.editable;
+		ctxInput.addEventListener( 'change', function () {
+			var value = ctxInput.value.trim();
+			if ( value !== ( rel.context || '' ) ) {
+				self._storeCall( self.store.updateEdge( card.id, { context: value } ) );
+			}
+		} );
+
 		// inferred: deduced, not directly observed
 		var infLabel = el( 'label', 'inf-check', body );
 		var infBox = el( 'input', null, infLabel );
@@ -1753,6 +1768,11 @@
 			var label = rel.tag || '';
 			if ( rel.inferred ) {
 				label = '∴' + ( label ? ' ' + label : '' );
+			}
+			if ( rel.context ) {
+				var ctx = rel.context.length > 24 ?
+					rel.context.slice( 0, 23 ) + '…' : rel.context;
+				label += ( label ? ' ' : '' ) + '(' + ctx + ')';
 			}
 			if ( rel.evidence.length ) {
 				label += ( label ? ' ' : '' ) + '⧉' + rel.evidence.length;

@@ -121,7 +121,8 @@
 				};
 				candidates[ title + '#' + entry.id ] = {
 					from: resolve( entry.from ), to: resolve( entry.to ),
-					tag: entry.tag, inferred: entry.inferred, evidence: entry.evidence
+					tag: entry.tag, context: entry.context,
+					inferred: entry.inferred, evidence: entry.evidence
 				};
 				if ( entry.tag ) { tagSet[ entry.tag ] = true; }
 			} );
@@ -146,6 +147,7 @@
 			doc.relationships[ id ] = {
 				from: c.from, to: c.to, tag: c.tag,
 				tagColor: Text.hashColor( c.tag ),
+				context: c.context,
 				inferred: c.inferred, evidence: c.evidence,
 				hx: layout.hx || 0, hy: layout.hy || 0,
 				hset: !!layout.hset, pinned: !!layout.pinned
@@ -260,12 +262,13 @@
 			id: localId,
 			from: this._refFor( fromId, page ),
 			to: this._refFor( toId, page ),
-			tag: tag || '', inferred: false, evidence: []
+			tag: tag || '', context: '', inferred: false, evidence: []
 		} );
 		var id = page + '#' + localId;
 		this.doc.relationships[ id ] = {
 			from: fromId, to: toId, tag: tag || '',
 			tagColor: Text.hashColor( tag || '' ),
+			context: '',
 			inferred: false, evidence: [],
 			hx: 0, hy: 0, hset: false, pinned: false
 		};
@@ -282,10 +285,12 @@
 			from: this._refFor( rel.from, page ),
 			to: this._refFor( rel.to, page ),
 			tag: 'tag' in changes ? changes.tag : rel.tag,
+			context: 'context' in changes ? changes.context : rel.context,
 			inferred: 'inferred' in changes ? changes.inferred : rel.inferred,
 			evidence: 'evidence' in changes ? changes.evidence : rel.evidence
 		} );
 		if ( 'tag' in changes ) { rel.tag = changes.tag; rel.tagColor = Text.hashColor( changes.tag ); }
+		if ( 'context' in changes ) { rel.context = changes.context; }
 		if ( 'inferred' in changes ) { rel.inferred = changes.inferred; }
 		if ( 'evidence' in changes ) { rel.evidence = changes.evidence; }
 		if ( rel.tag && this.tags.indexOf( rel.tag ) === -1 ) { this.tags.push( rel.tag ); }

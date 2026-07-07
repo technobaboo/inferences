@@ -14,6 +14,11 @@ editor for its own document format:
   page, so a "Unix domain socket" can be the *transport for* the edge
   between a client and a compositor. Meta-edges anchor at the target
   edge's label pill.
+- A relationship's **tag** fixes its type ("talks to"), while an optional
+  **context** (`context=…`) qualifies that specific instance — the
+  conditions under which it holds ("only over TCP", "during startup"). The
+  tag is shared and colored; the context is free text shown in parentheses
+  on the chip and the edge label.
 - Relationships can be marked **inferred** (`inferred=yes` — deduced, not
   directly observed), drawn dashed with a "∴" marker, and carry
   **evidence** as ordinary `<ref>…</ref>` citations placed right after the
@@ -134,7 +139,9 @@ renders on its own paragraph.
 
 `id` is stable per page and never reused, so `Page#id` references stay
 valid; `to=`/`from=` accept `Title`, `Title#id`, or `#id` (an inference on
-the same page). Values containing `|` are escaped as `{{!}}`. The parser
+the same page). `tag=` names the fixed relationship type; the optional
+`context=` records conditions specific to this instance. Values containing
+`|` are escaped as `{{!}}`. The parser
 function renders an inline chip, registers the target as a page link
 (so "What links here" works), and exposes all of a page's inferences in
 the `inferences` page property for queries.
