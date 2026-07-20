@@ -155,6 +155,12 @@ code. Open `dev/preview.html` in a browser to hack on the editor against
 a mock in-memory wiki that uses the same wikitext code — state persists in
 localStorage, append `?fresh` to reset.
 
+`dev/smoke-test.js` drives that same harness headlessly (Playwright +
+Chromium) and asserts the canvas actually renders its things and
+relationships with no runtime errors — a guard against render-time bugs
+(like a blank canvas) that wikitext-level checks can't catch. Run it with
+`node dev/smoke-test.js` (needs `playwright` available).
+
 ## Roadmap
 
 - **Observation overlays**: contributed layers recording experienced
