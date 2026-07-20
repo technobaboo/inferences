@@ -1770,9 +1770,9 @@
 				label = '∴' + ( label ? ' ' + label : '' );
 			}
 			if ( rel.context ) {
-				var ctx = rel.context.length > 24 ?
+				var ctxText = rel.context.length > 24 ?
 					rel.context.slice( 0, 23 ) + '…' : rel.context;
-				label += ( label ? ' ' : '' ) + '(' + ctx + ')';
+				label += ( label ? ' ' : '' ) + '(' + ctxText + ')';
 			}
 			if ( rel.evidence.length ) {
 				label += ( label ? ' ' : '' ) + '⧉' + rel.evidence.length;
